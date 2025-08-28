@@ -1,5 +1,5 @@
 #!/bin/bash
-# HeudlessPM Seamless Installation E2E Test Script
+# HeadlessPM Seamless Installation E2E Test Script
 # Tests the complete user experience from UV installation to working API
 
 set -e  # Exit on any error
@@ -73,12 +73,12 @@ test_seamless_installation() {
     source test-env/bin/activate
     
     # Test installation from local path
-    log_info "Installing HeudlessPM via UV from local repository..."
+    log_info "Installing HeadlessPM via UV from local repository..."
     local repo_path="$1"  # Passed as parameter
     if uv pip install "file://$repo_path"; then
-        log_success "HeudlessPM installed successfully via UV"
+        log_success "HeadlessPM installed successfully via UV"
     else
-        log_error "Failed to install HeudlessPM via UV"
+        log_error "Failed to install HeadlessPM via UV"
         return 1
     fi
     
@@ -199,7 +199,7 @@ test_api_functionality() {
     source test-env/bin/activate
     uv pip install "file://$repo_path"
     
-    log_info "Starting HeudlessPM API server..."
+    log_info "Starting HeadlessPM API server..."
     
     # Start server in background
     headless-pm &
@@ -306,7 +306,7 @@ test_pypi_readiness() {
 # Main test execution
 main() {
     echo -e "${BLUE}====================================${NC}"
-    echo -e "${BLUE}HeudlessPM Seamless Installation Test${NC}"
+    echo -e "${BLUE}HeadlessPM Seamless Installation Test${NC}"
     echo -e "${BLUE}====================================${NC}"
     echo ""
     
@@ -344,7 +344,7 @@ main() {
         echo -e "${RED}Tests Failed: $TESTS_FAILED${NC}"
         echo ""
         echo -e "${GREEN}✅ E2E TEST SUITE PASSED${NC}"
-        echo -e "${GREEN}HeudlessPM seamless installation is working perfectly!${NC}"
+        echo -e "${GREEN}HeadlessPM seamless installation is working perfectly!${NC}"
         echo ""
         echo -e "${BLUE}Installation command for users:${NC}"
         echo -e "${YELLOW}uv pip install https://github.com/madviking/headless-pm${NC}"
