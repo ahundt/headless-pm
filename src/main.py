@@ -162,11 +162,14 @@ def main():
     auto_setup_on_first_run()
     
     # Start server
-    port = int(os.getenv("PORT", "6969"))
+    port = int(os.getenv("SERVICE_PORT", "6969"))
     print(f"🚀 Starting HeadlessPM API on http://localhost:{port}")
     print(f"📚 API documentation: http://localhost:{port}/api/v1/docs")
     
-    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=False)
+    # Configurable reload for development
+    reload_mode = os.getenv("HEADLESS_PM_RELOAD", "false").lower() == "true"
+    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=reload_mode)
 
 if __name__ == "__main__":
     main()
+

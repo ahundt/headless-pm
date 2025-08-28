@@ -1,6 +1,5 @@
 [project]
 name = "headless-pm"
-version = "1.0.0"
 description = "LLM agent task coordination API with document-based communication"
 authors = [
     {name = "HeadlessPM Team", email = "team@headless-pm.dev"}
