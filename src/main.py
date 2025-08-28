@@ -130,6 +130,43 @@ def status_check():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-if __name__ == "__main__":
+def auto_setup_on_first_run():
+    """Automatically set up HeadlessPM on first run - seamless like numpy"""
+    from pathlib import Path
+    import shutil
+    
+    # Check if this is first run (no .env file exists)
+    env_file = Path(".env")
+    env_example = Path("env-example")
+    
+    if not env_file.exists() and env_example.exists():
+        print("🚀 HeadlessPM: First run detected - auto-configuring...")
+        
+        # Create .env from template
+        shutil.copy2(env_example, env_file)
+        print("✅ Created .env configuration file")
+        
+        # Initialize database
+        try:
+            create_db_and_tables()
+            print("✅ Database initialized")
+        except Exception as e:
+            print(f"⚠️  Database initialization: {e}")
+        
+        print("✅ HeadlessPM ready! Edit .env file if needed.")
+        print("")
+
+def main():
+    """Main entry point for headless-pm command"""
+    # Auto-setup on first run
+    auto_setup_on_first_run()
+    
+    # Start server
     port = int(os.getenv("PORT", "6969"))
-    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=True)
+    print(f"🚀 Starting HeadlessPM API on http://localhost:{port}")
+    print(f"📚 API documentation: http://localhost:{port}/api/v1/docs")
+    
+    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=False)
+
+if __name__ == "__main__":
+    main()

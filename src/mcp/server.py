@@ -56,228 +56,77 @@ class HeadlessPMMCPServer:
         @self.server.list_tools()
         async def handle_list_tools() -> ListToolsResult:
             """List available tools."""
-            return ListToolsResult(
-                tools=[
-                    Tool(
-                        name="register_agent",
-                        description="Register agent with Headless PM system",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "agent_id": {
-                                    "type": "string",
-                                    "description": "Unique identifier for the agent"
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "description": "Agent role (frontend_dev, backend_dev, architect, pm, qa)",
-                                    "enum": ["frontend_dev", "backend_dev", "architect", "pm", "qa"]
-                                },
-                                "skill_level": {
-                                    "type": "string",
-                                    "description": "Agent skill level",
-                                    "enum": ["junior", "senior", "principal"],
-                                    "default": "senior"
-                                }
+            logger.info("Starting handle_list_tools() - preparing to create 12 Tool objects")
+            
+            try:
+                # Create first tool with debug logging
+                logger.info("Creating Tool 1: register_agent")
+                tool1 = Tool(
+                    name="register_agent",
+                    description="Register agent with Headless PM system",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Unique identifier for the agent"
                             },
-                            "required": ["agent_id", "role"]
-                        }
-                    ),
-                    Tool(
-                        name="get_project_context",
-                        description="Get project configuration and context information",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        }
-                    ),
-                    Tool(
-                        name="get_next_task",
-                        description="Get next available task for the registered agent",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "role": {
-                                    "type": "string",
-                                    "description": "Override agent role for task search"
-                                },
-                                "skill_level": {
-                                    "type": "string",
-                                    "description": "Override skill level for task search"
-                                }
+                            "role": {
+                                "type": "string",
+                                "description": "Agent role (frontend_dev, backend_dev, architect, pm, qa)",
+                                "enum": ["frontend_dev", "backend_dev", "architect", "pm", "qa"]
+                            },
+                            "skill_level": {
+                                "type": "string",
+                                "description": "Agent skill level",
+                                "enum": ["junior", "senior", "principal"],
+                                "default": "senior"
                             }
-                        }
-                    ),
-                    Tool(
-                        name="create_task",
-                        description="Create a new task",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "title": {
-                                    "type": "string",
-                                    "description": "Task title"
-                                },
-                                "description": {
-                                    "type": "string",
-                                    "description": "Detailed task description"
-                                },
-                                "complexity": {
-                                    "type": "string",
-                                    "description": "Task complexity level",
-                                    "enum": ["minor", "major"]
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "description": "Required role for the task"
-                                },
-                                "skill_level": {
-                                    "type": "string",
-                                    "description": "Required skill level for the task",
-                                    "enum": ["junior", "senior", "principal"]
-                                }
-                            },
-                            "required": ["title", "description", "complexity"]
-                        }
-                    ),
-                    Tool(
-                        name="lock_task",
-                        description="Lock a task to prevent other agents from picking it up",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "task_id": {
-                                    "type": "integer",
-                                    "description": "ID of the task to lock"
-                                }
-                            },
-                            "required": ["task_id"]
-                        }
-                    ),
-                    Tool(
-                        name="update_task_status",
-                        description="Update task status and progress",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "task_id": {
-                                    "type": "integer",
-                                    "description": "ID of the task to update"
-                                },
-                                "status": {
-                                    "type": "string",
-                                    "description": "New task status",
-                                    "enum": ["created", "assigned", "under_work", "dev_done", "testing", "completed",
-                                             "blocked"]
-                                },
-                                "notes": {
-                                    "type": "string",
-                                    "description": "Optional notes about the update"
-                                }
-                            },
-                            "required": ["task_id", "status"]
-                        }
-                    ),
-                    Tool(
-                        name="create_document",
-                        description="Create a document with optional @mentions for team communication",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "title": {
-                                    "type": "string",
-                                    "description": "Document title"
-                                },
-                                "content": {
-                                    "type": "string",
-                                    "description": "Document content (supports @mentions)"
-                                },
-                                "doc_type": {
-                                    "type": "string",
-                                    "description": "Document type",
-                                    "default": "note"
-                                },
-                                "mentions": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "List of agent IDs to mention"
-                                }
-                            },
-                            "required": ["title", "content"]
-                        }
-                    ),
-                    Tool(
-                        name="get_mentions",
-                        description="Get notifications and mentions for the registered agent",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        }
-                    ),
-                    Tool(
-                        name="register_service",
-                        description="Register a microservice with the system",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "service_name": {
-                                    "type": "string",
-                                    "description": "Name of the service"
-                                },
-                                "service_url": {
-                                    "type": "string",
-                                    "description": "Service URL"
-                                },
-                                "health_check_url": {
-                                    "type": "string",
-                                    "description": "Health check endpoint URL"
-                                }
-                            },
-                            "required": ["service_name", "service_url"]
-                        }
-                    ),
-                    Tool(
-                        name="send_heartbeat",
-                        description="Send heartbeat for a registered service",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "service_name": {
-                                    "type": "string",
-                                    "description": "Name of the service"
-                                },
-                                "status": {
-                                    "type": "string",
-                                    "description": "Service status",
-                                    "default": "healthy"
-                                }
-                            },
-                            "required": ["service_name"]
-                        }
-                    ),
-                    Tool(
-                        name="poll_changes",
-                        description="Poll for system changes since a given timestamp",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "since_timestamp": {
-                                    "type": "string",
-                                    "description": "ISO timestamp to poll changes since"
-                                }
-                            }
-                        }
-                    ),
-                    Tool(
-                        name="get_token_usage",
-                        description="Get MCP token usage statistics",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        }
-                    )
-                ]
-            )
+                        },
+                        "required": ["agent_id", "role"]
+                    }
+                )
+                logger.info(f"Successfully created tool1: {tool1}")
+                
+                # Create the tools list
+                tools_list = [tool1]
+                logger.info(f"Created tools_list: {tools_list}")
+                logger.info(f"tools_list type: {type(tools_list)}")
+                logger.info(f"tools_list[0] type: {type(tools_list[0])}")
+                
+                # Create ListToolsResult
+                logger.info("Creating ListToolsResult...")
+                result = ListToolsResult(tools=tools_list)
+                logger.info(f"Successfully created ListToolsResult: {result}")
+                logger.info(f"ListToolsResult.tools type: {type(result.tools)}")
+                logger.info(f"ListToolsResult.tools[0] type: {type(result.tools[0])}")
+                
+                # Test JSON serialization to see where error occurs
+                try:
+                    import json
+                    logger.info("Testing Tool JSON serialization...")
+                    tool_dict = tool1.model_dump()
+                    logger.info(f"Tool.model_dump() succeeded: {tool_dict}")
+                    
+                    logger.info("Testing ListToolsResult JSON serialization...")
+                    result_dict = result.model_dump()
+                    logger.info(f"ListToolsResult.model_dump() succeeded: {len(str(result_dict))} chars")
+                    
+                except Exception as serialize_error:
+                    logger.error(f"JSON serialization error: {serialize_error}")
+                    logger.error(f"Serialization error type: {type(serialize_error)}")
+                    import traceback
+                    logger.error(f"Serialization traceback: {traceback.format_exc()}")
+                
+                return result
+            
+            except Exception as e:
+                logger.error(f"Error creating Tool objects in handle_list_tools(): {e}")
+                logger.error(f"Exception type: {type(e)}")
+                logger.error(f"Exception args: {e.args}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                raise
 
         @self.server.list_resources()
         async def handle_list_resources() -> ListResourcesResult:
@@ -714,8 +563,8 @@ class HeadlessPMMCPServer:
             await self.client.aclose()
 
 
-async def main():
-    """Main entry point."""
+async def async_main():
+    """Async main entry point."""
     import sys
     import os
 
@@ -729,5 +578,10 @@ async def main():
     await server.run()
 
 
+def main():
+    """Synchronous main entry point for CLI."""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
