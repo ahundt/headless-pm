@@ -4,6 +4,8 @@ import uvicorn
 import os
 import asyncio
 import subprocess
+import signal
+import atexit
 from pathlib import Path
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -18,8 +20,54 @@ from src.api.mention_routes import router as mention_router
 from src.api.changes_routes import router as changes_router
 from src.services.health_checker import health_checker
 
+# Global dashboard process for cleanup
+dashboard_process = None
+
+def cleanup_dashboard():
+    """Clean up dashboard process on exit"""
+    global dashboard_process
+    if dashboard_process and dashboard_process.poll() is None:
+        try:
+            dashboard_process.terminate()
+            dashboard_process.wait(timeout=5)
+        except (subprocess.TimeoutExpired, Exception):
+            try:
+                dashboard_process.kill()
+                dashboard_process.wait()
+            except Exception:
+                pass
+        dashboard_process = None
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    cleanup_dashboard()
+    # Re-raise the signal to allow normal shutdown
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+def check_dashboard_health():
+    """Lightweight dashboard health check - called only when needed"""
+    global dashboard_process
+    if not dashboard_process:
+        return False
+        
+    # Non-blocking check if process exited
+    if dashboard_process.poll() is not None:
+        # Process died - capture any final output for debugging
+        try:
+            stdout, stderr = dashboard_process.communicate(timeout=1)
+            if stderr:
+                print(f"⚠️  Dashboard ended unexpectedly: {stderr.decode().strip()[:100]}")
+        except:
+            print("⚠️  Dashboard process ended unexpectedly")
+        dashboard_process = None
+        return False
+    return True
+
 def start_dashboard_if_available():
-    """Simple dashboard startup - no complex orchestration"""
+    """Start dashboard with lightweight monitoring"""
+    global dashboard_process
+    
     dashboard_port = int(os.getenv("DASHBOARD_PORT", "3001"))
     auto_start = os.getenv("HEADLESS_PM_AUTO_DASHBOARD", "true").lower() == "true"
     
@@ -32,14 +80,24 @@ def start_dashboard_if_available():
         return None
     
     try:
-        # Start dashboard as simple background process
-        return subprocess.Popen(
+        # Start dashboard process with error capture
+        dashboard_process = subprocess.Popen(
             ["npm", "run", "dev", "--", "--port", str(dashboard_port)],
             cwd=dashboard_dir,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE,  # Capture for error reporting
+            stderr=subprocess.PIPE,  # Capture for error reporting
+            text=True
         )
-    except Exception:
+        
+        # Register cleanup handlers
+        atexit.register(cleanup_dashboard)
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        return dashboard_process
+        
+    except Exception as e:
+        print(f"⚠️  Dashboard startup failed: {e}")
         return None
 
 
@@ -52,6 +110,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
+    cleanup_dashboard()
     await health_checker.stop()
 
 app = FastAPI(
@@ -91,7 +150,7 @@ def read_root():
 
 @app.get("/health", tags=["Health"])
 def health_check():
-    """Enhanced health check endpoint with database status"""
+    """Enhanced health check endpoint with database and dashboard status"""
     from src.models.database import get_session
     from sqlmodel import select
     from src.models.models import Agent
@@ -106,11 +165,22 @@ def health_check():
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"
     
+    # Check dashboard health (lightweight - no thread needed)
+    dashboard_healthy = check_dashboard_health()
+    dashboard_status = "running" if dashboard_healthy else "stopped"
+    
+    overall_status = "healthy"
+    if db_status != "healthy":
+        overall_status = "degraded"
+    elif not dashboard_healthy and os.getenv("DASHBOARD_PORT"):
+        overall_status = "degraded"
+    
     return {
-        "status": "healthy" if db_status == "healthy" else "degraded",
+        "status": overall_status,
         "service": "headless-pm-api",
         "version": "1.0.0",
         "database": db_status,
+        "dashboard": dashboard_status,
         "timestamp": datetime.utcnow().isoformat()
     }
 
