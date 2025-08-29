@@ -2,7 +2,7 @@
 # Set DB_CONNECTION to 'mysql' for MySQL or 'sqlite' for SQLite
 DB_CONNECTION="sqlite" # or "mysql"
 # SQLite Configuration (when DB_CONNECTION="sqlite")
-DATABASE_URL="sqlite:///headless-pm.db"           # Usage tracking database
+DATABASE_URL="sqlite:///headless-pm.db"  # Usage tracking database
 
 # MySQL Configuration (when DB_CONNECTION="mysql")
 # All components will use the same MySQL instance with different tables
