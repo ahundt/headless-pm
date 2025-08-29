@@ -75,14 +75,34 @@ path = "src/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+include = [
+    "dashboard/**/*",
+    "env-example",
+]
+exclude = [
+    "dashboard/node_modules/**/*",
+    "dashboard/.next/**/*", 
+    "dashboard/test-results/**/*",
+    "dashboard/tests/**/*",
+    "dashboard/playwright-report/**/*",
+    "dashboard/screenshots/**/*",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/",
+    "dashboard/",
     "setup/",
+    "scripts/",
     "README.md",
-    "LICENSE",
+    "LICENSE", 
     "env-example",
+]
+exclude = [
+    "dashboard/node_modules/**/*",
+    "dashboard/.next/**/*",
+    "dashboard/test-results/**/*",
+    "dashboard/playwright-report/**/*",
 ]
 
 # UV configuration for modern dependency management
@@ -101,5 +121,4 @@ members = [
     ".",
 ]
 
-# UV sources for development dependencies
-[tool.uv.sources]
+# UV sources configuration (none needed currently)

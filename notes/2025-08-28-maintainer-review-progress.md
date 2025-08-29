@@ -153,29 +153,48 @@ Entry point imports fail without dependencies (expected behavior). UV installati
 ### READY FOR MERGE ✅
 **All issues resolved, no blocking problems identified**
 
-## Next Immediate Actions
+## FINAL IMPLEMENTATION PLAN
 
-### 1. Fix Critical Issues (ETA: 10 minutes)
-```bash
-# Add missing newlines
-echo "" >> src/__init__.py
-echo "" >> src/main.py  
-echo "" >> src/cli/main.py
+### Essential Files for UV Integration Commit
+Based on maintainer review, these are the ONLY files needed for the UV integration merge:
 
-# Fix version configuration conflict
-sed -i '/^version = "1.0.0"$/d' pyproject.toml
-```
+#### Core UV Integration Files (MUST COMMIT):
+1. **pyproject.toml** - UV packaging configuration with proper entry points
+2. **src/__init__.py** - Version info for dynamic versioning  
+3. **src/main.py** - SERVICE_PORT configuration and configurable reload
+4. **src/cli/main.py** - Proper newline endings
 
-### 2. Verify MCP Entry Point (ETA: 5 minutes)
-```bash
-# Check if main function exists in src/mcp/server.py
-grep -n "def main" src/mcp/server.py
-```
+#### Supporting Files (COMMIT IF UPDATED):
+5. **test-seamless-installation.sh** - E2E testing script for validation
+6. **src/mcp/server.py** - MCP server improvements (if any architectural changes)
 
-### 3. Complete MCP Server Analysis (ETA: 15 minutes)
-- Analyze 227 deleted lines vs 298 added lines
-- Identify breaking changes
-- Verify all MCP functionality preserved
+### Implementation Strategy
+
+#### Phase 1: Essential UV Integration (THIS COMMIT)
+- ✅ **pyproject.toml**: Complete UV configuration with working entry points
+- ✅ **Dynamic Versioning**: Version from src/__init__.py via Hatchling
+- ✅ **Environment Configuration**: SERVICE_PORT and configurable reload
+- ✅ **Code Quality**: Proper file endings, no syntax errors
+
+#### Phase 2: Documentation and Testing (SEPARATE COMMITS)
+- **notes/2025-08-28-uv-integration-setup-plan.md**: Move to notes/ folder
+- **maintainer-review-progress.md**: Move to notes/ folder  
+- **Dashboard integration**: Future enhancement, not needed for UV integration
+
+### Commit Strategy
+1. **Create minimal, essential commit** with only the 4-6 core files
+2. **Commit message format**: `feat(uv): add UV package manager integration with entry points`
+3. **Focus**: UV packaging functionality, not documentation or future plans
+4. **Keep clean history**: Documentation goes to notes/, code changes to main
+
+### Validation Checklist
+- [x] All entry points properly configured in pyproject.toml
+- [x] Dynamic versioning working via Hatchling
+- [x] SERVICE_PORT consistency with documentation
+- [x] Configurable reload for development
+- [x] Proper file endings (newlines)
+- [x] No syntax errors
+- [x] No breaking changes to existing functionality
 
 ## Risk Assessment
 
