@@ -291,11 +291,46 @@ Headless PM includes a Model Context Protocol (MCP) server for Claude Code integ
 ```
 
 ### MCP Features
+- **Multi-Client Coordination**: Multiple Claude Code instances can safely connect to the same API
+- **Auto-Discovery**: Connection-first pattern tries existing APIs before starting new ones  
+- **Reference Counting**: API remains running as long as any MCP client is connected
+- **Process Safety**: Only the client that started an API can terminate it (preserves existing APIs)
 - Natural language task management
 - Automatic agent registration (connection type: "mcp")
 - Token usage tracking
 - Multiple transport protocols (HTTP, SSE, WebSocket, STDIO)
-- Seamless integration with Claude Code
+- Cross-platform file coordination with atomic operations
+
+### Multi-Client Behavior
+
+**Multiple Clients Scenario**:
+```bash
+# Terminal 1: First Claude Code instance
+claude  # Starts API if none exists
+
+# Terminal 2: Second Claude Code instance  
+claude  # Connects to existing API, no new process started
+
+# When Terminal 1 exits: API continues for Terminal 2
+# When Terminal 2 exits: API shuts down (last client)
+```
+
+**Pre-existing API Scenario**:
+```bash
+# Terminal 1: Start API manually
+headless-pm &
+
+# Terminal 2: Claude Code connects  
+claude  # Connects to existing API
+
+# When Claude exits: API remains running (not started by MCP)
+```
+
+### Environment Variables
+- `HEADLESS_PM_NO_AUTOSTART`: Skip auto-start, connection-only mode
+- `HEADLESS_PM_COMMAND`: Override command discovery  
+- `HEADLESS_PM_DIR`: Set working directory for API processes
+- `SERVICE_PORT`: API port (default: 6969)
 
 ### Using MCP Commands
 Once installed in Claude Code, you can use natural language:
