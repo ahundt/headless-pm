@@ -6,8 +6,13 @@ Provides standardized interface for Claude Code and other MCP clients.
 import asyncio
 import json
 import logging
+import subprocess
+import time
 from typing import Any, Dict, List, Optional, Sequence
 from datetime import datetime
+from pathlib import Path
+import os
+import sys
 
 import httpx
 from mcp.server import Server
@@ -28,7 +33,14 @@ from mcp.types import (
     Tool,
     EmbeddedResource,
 )
-from .token_tracker import TokenTracker
+try:
+    from .token_tracker import TokenTracker
+except ImportError:
+    # Handle case where this is run as a standalone script
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from token_tracker import TokenTracker
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
@@ -46,9 +58,102 @@ class HeadlessPMMCPServer:
         self.agent_role: Optional[str] = None
         self.agent_skill_level: Optional[str] = None
         self.token_tracker = TokenTracker()
+        self._api_process: Optional[subprocess.Popen] = None
 
         # Register handlers
         self._register_handlers()
+
+    async def ensure_api_available(self) -> bool:
+        """Ensure HeadlessPM API is available using simple connection-first pattern.
+        
+        Returns:
+            True if API is available, False if failed to start/connect
+        """
+        # Extract host and port from base_url
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.base_url)
+        port = parsed.port or 6969
+        
+        # Step 1: Try to connect to existing API
+        try:
+            logger.info(f"Checking for existing API at {self.base_url}...")
+            response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
+            if response.status_code == 200:
+                logger.info("✅ Connected to existing HeadlessPM API")
+                return True
+        except Exception:
+            logger.info("No existing API found, attempting to start...")
+        
+        # Step 2: Try to start API process
+        try:
+            # Find headless-pm executable in common locations
+            headless_pm_cmd = self._find_headless_pm_command()
+            if not headless_pm_cmd:
+                logger.error("❌ headless-pm command not found in PATH")
+                return False
+                
+            logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd}")
+            
+            # Start as subprocess with minimal output
+            self._api_process = subprocess.Popen(
+                headless_pm_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                # Set environment to use same port
+                env={**os.environ, "SERVICE_PORT": str(port)}
+            )
+            
+            # Step 3: Wait for API to become available (with retries)
+            for attempt in range(12):  # 12 attempts over 6 seconds
+                try:
+                    await asyncio.sleep(0.5)
+                    response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
+                    if response.status_code == 200:
+                        logger.info("✅ Successfully started HeadlessPM API")
+                        return True
+                except Exception:
+                    continue
+            
+            # If we get here, startup failed
+            if self._api_process.poll() is None:
+                # Process still running but not responding
+                logger.error(f"❌ API process started but not responding at {self.base_url}")
+                self._api_process.terminate()
+            else:
+                # Process exited
+                logger.error("❌ API process exited during startup")
+            
+            self._api_process = None
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start HeadlessPM API: {e}")
+            return False
+
+    def _find_headless_pm_command(self) -> Optional[List[str]]:
+        """Find headless-pm command in common locations."""
+        # Try different command variations
+        candidates = [
+            ["headless-pm"],                    # Global install
+            ["python", "-m", "src.main"],      # From source directory
+            ["uvicorn", "src.main:app", "--host", "0.0.0.0"],  # Fallback uvicorn
+        ]
+        
+        for cmd in candidates:
+            try:
+                # Test if command exists and is executable
+                result = subprocess.run(
+                    cmd + ["--help"], 
+                    capture_output=True, 
+                    timeout=3,
+                    cwd=Path.cwd()
+                )
+                if result.returncode == 0:
+                    return cmd
+            except Exception:
+                continue
+                
+        return None
 
     def _register_handlers(self):
         """Register MCP handlers."""
@@ -538,6 +643,12 @@ class HeadlessPMMCPServer:
 
     async def run(self):
         """Run the MCP server."""
+        # Ensure API is available before starting MCP server
+        if not await self.ensure_api_available():
+            logger.error("❌ Could not start or connect to HeadlessPM API")
+            logger.error("   Please ensure HeadlessPM is installed or start it manually with: headless-pm")
+            return
+            
         try:
             async with stdio_server() as (read_stream, write_stream):
                 await self.server.run(
@@ -561,6 +672,17 @@ class HeadlessPMMCPServer:
             if self.agent_id:
                 self.token_tracker.end_session(self.agent_id)
             await self.client.aclose()
+            
+            # Clean up API process if we started it
+            if self._api_process and self._api_process.poll() is None:
+                logger.info("Stopping HeadlessPM API process...")
+                self._api_process.terminate()
+                try:
+                    self._api_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning("API process did not stop gracefully, killing...")
+                    self._api_process.kill()
+                    self._api_process.wait()
 
 
 async def async_main():

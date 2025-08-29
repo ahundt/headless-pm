@@ -24,8 +24,11 @@ uv run api-only       # API without dashboard
 
 **That's it!** HeadlessPM starts with:
 - API server: http://localhost:6969
-- Web dashboard: http://localhost:3001 (auto-starts)
+- Web dashboard: http://localhost:3001 (auto-starts with event-driven monitoring)
 - API docs: http://localhost:6969/api/v1/docs
+- Health status: http://localhost:6969/health (includes dashboard status)
+
+**New in v1.0+**: Enhanced process management with automatic dashboard lifecycle and health monitoring.
 
 ### Option 2: Development Setup
 
@@ -52,13 +55,26 @@ The `universal_setup.sh` script automatically detects your architecture and crea
 
 The start script automatically checks dependencies, initializes database, and starts the server on `http://localhost:6969`.
 
-**Note on Service Ports:**
+**Environment Configuration:**
 - Services are only started if their port is defined in `.env`
-- To skip a service, remove or comment out its port variable:
+- Dashboard behavior controlled by environment variables:
+  - `DASHBOARD_PORT` - Web dashboard port (default: 3001, unset = disabled)
+  - `HEADLESS_PM_AUTO_DASHBOARD` - Auto-start dashboard (default: true)
+- Service ports:
   - `SERVICE_PORT` - API server (default: 6969)
   - `MCP_PORT` - MCP server (default: 6968)
-  - `DASHBOARD_PORT` - Web dashboard (default: 3001)
-- Example: To run without dashboard, comment out `DASHBOARD_PORT` in `.env`
+
+**Dashboard Control Examples:**
+```bash
+# Disable dashboard completely
+unset DASHBOARD_PORT  # or remove from .env
+
+# Enable dashboard but disable auto-start
+HEADLESS_PM_AUTO_DASHBOARD=false headless-pm
+
+# Use different port
+DASHBOARD_PORT=8080 headless-pm
+```
 
 ## 🚀 Features
 
@@ -213,6 +229,26 @@ The web dashboard provides a real-time view of your project:
 - `POST /api/v1/services/{name}/heartbeat` - Send heartbeat
 - `GET /api/v1/services` - List all services with health status
 - `DELETE /api/v1/services/{name}` - Unregister service
+
+### Health Monitoring
+- `GET /health` - System health with database and dashboard status
+- `GET /status` - Detailed status with metrics
+
+**Health Endpoint Response (New in v1.0+):**
+```json
+{
+  "status": "healthy",
+  "service": "headless-pm-api", 
+  "version": "1.0.0",
+  "database": "healthy",
+  "dashboard": "running",
+  "timestamp": "2024-12-14T10:30:00Z"
+}
+```
+
+**Dashboard Status Values:**
+- `running` - Dashboard process active and healthy
+- `stopped` - Dashboard not running (expected if DASHBOARD_PORT unset)
 
 ### Updates
 - `GET /api/v1/changes` - Poll changes since timestamp

@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 import signal
 import atexit
+import socket
 from pathlib import Path
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -22,6 +23,28 @@ from src.services.health_checker import health_checker
 
 # Global dashboard process for cleanup
 dashboard_process = None
+
+def find_available_port(start_port, max_attempts=50):
+    """Find next available port starting from start_port (KISS approach)"""
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('localhost', port))
+                return port
+        except OSError:
+            continue
+    # Fallback to original port if all attempts fail
+    return start_port
+
+def get_safe_port(env_var, default_port):
+    """Get port with environment override or safe auto-discovery"""
+    if env_var in os.environ:
+        # Respect explicit environment setting
+        return int(os.environ[env_var])
+    else:
+        # Use auto-discovery for multi-project safety
+        return find_available_port(default_port)
 
 def cleanup_dashboard():
     """Clean up dashboard process on exit"""
@@ -68,10 +91,11 @@ def start_dashboard_if_available():
     """Start dashboard with lightweight monitoring"""
     global dashboard_process
     
-    dashboard_port = int(os.getenv("DASHBOARD_PORT", "3001"))
+    # Use safe port discovery if DASHBOARD_PORT not explicitly set
+    dashboard_port = get_safe_port("DASHBOARD_PORT", 3001)
     auto_start = os.getenv("HEADLESS_PM_AUTO_DASHBOARD", "true").lower() == "true"
     
-    if not auto_start or not os.getenv("DASHBOARD_PORT"):
+    if not auto_start:
         return None
         
     # Check for dashboard directory
@@ -284,9 +308,12 @@ def main():
     # Start dashboard if available
     dashboard_process = start_dashboard_if_available()
     
-    # Start server
-    port = int(os.getenv("SERVICE_PORT", "6969"))
-    dashboard_port = int(os.getenv("DASHBOARD_PORT", "3001"))
+    # Get safe ports with auto-discovery for multi-project support
+    port = get_safe_port("SERVICE_PORT", 6969)
+    dashboard_port = get_safe_port("DASHBOARD_PORT", 3001)
+    
+    # Update environment for dashboard process
+    os.environ["DASHBOARD_PORT"] = str(dashboard_port)
     
     print(f"🚀 HeadlessPM starting...")
     print(f"   API: http://localhost:{port}")
@@ -296,6 +323,8 @@ def main():
     if dashboard_process and Path("dashboard").exists():
         print(f"   Dashboard: http://localhost:{dashboard_port}")
     
+    # Show MCP connection info for easy setup
+    print(f"   MCP Server: headless-pm-mcp (connects to http://localhost:{port})")
     print(f"   Stop with Ctrl+C")
     print()
     
