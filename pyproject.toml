@@ -1,5 +1,6 @@
 [project]
 name = "headless-pm"
+version = "1.0.0"
 description = "LLM agent task coordination API with document-based communication"
 authors = [
     {name = "HeadlessPM Team", email = "team@headless-pm.dev"}
@@ -52,7 +53,6 @@ all = [
 # Command-line entry points for seamless execution
 [project.scripts]
 headless-pm = "src.main:main"
-headless-pm-api = "src.main:main"
 headless-pm-cli = "src.cli.main:main"
 headless-pm-mcp = "src.mcp.server:main"
 
@@ -120,5 +120,13 @@ dev-dependencies = [
 members = [
     ".",
 ]
+
+# UV run scripts for easy execution
+[tool.uv.scripts]
+start = "headless-pm"  # uv run start -> runs complete system
+api-only = { cmd = ["headless-pm"], env = { "HEADLESS_PM_AUTO_DASHBOARD" = "false" } }
+dashboard = { cmd = ["npm", "run", "dev"], cwd = "dashboard" }
+cli = "headless-pm-cli"
+mcp = "headless-pm-mcp"
 
 # UV sources configuration (none needed currently)

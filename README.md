@@ -8,15 +8,36 @@ I use this with Claude Code, but it should work with any LLM Agent.
 
 ## ⚡ Quick Start
 
+### Option 1: UV Install (Recommended)
+
 ```bash
-# Clone the repository
+# Install with UV (fast, modern)
+uv pip install git+<repository>
+
+# Start complete system (API + Dashboard)
+headless-pm
+
+# Or use UV run scripts
+uv run start          # Complete system
+uv run api-only       # API without dashboard
+```
+
+**That's it!** HeadlessPM starts with:
+- API server: http://localhost:6969
+- Web dashboard: http://localhost:3001 (auto-starts)
+- API docs: http://localhost:6969/api/v1/docs
+
+### Option 2: Development Setup
+
+```bash
+# Clone for development
 git clone <repository>
 cd headless-pm
 
-# Run universal setup script (handles platform-specific requirements)
+# Setup environment
 ./setup/universal_setup.sh
 
-# Start the server (handles database setup automatically)
+# Start with separate processes
 ./start.sh
 ```
 

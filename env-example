@@ -29,7 +29,7 @@ SERVICER_HOST=localhost
 API_KEY_HEADLESS_PM="XXXXXX"
 DASHBOARD_PORT=3001
 
-# Dashboard Integration Mode
-# Set to "false" when using start.sh (multi-process mode)
-# Set to "true" for UV installations (integrated mode)
-HEADLESS_PM_INTEGRATED_MODE=false
+# Auto-start Dashboard
+# Set to "false" to disable automatic dashboard startup  
+# Set to "true" to auto-start dashboard with API (default)
+HEADLESS_PM_AUTO_DASHBOARD=false
