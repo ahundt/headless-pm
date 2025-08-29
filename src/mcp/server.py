@@ -29,15 +29,33 @@ Example Usage:
 import asyncio
 import json
 import logging
+import os
+import signal
 import subprocess
+import sys
+import tempfile
 import time
-from typing import Any, Dict, List, Optional, Sequence
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
-import os
-import sys
+from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
+import psutil
+
+# Cross-platform file locking
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows doesn't have fcntl, use msvcrt or simple fallback
+    HAS_FCNTL = False
+    try:
+        import msvcrt
+        HAS_MSVCRT = True
+    except ImportError:
+        HAS_MSVCRT = False
+
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
@@ -70,6 +88,29 @@ logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
 logger = logging.getLogger("headless-pm-mcp")
 
 
+def _lock_file(f):
+    """Cross-platform file locking."""
+    if HAS_FCNTL:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    elif HAS_MSVCRT:
+        # Windows locking with msvcrt
+        while True:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except IOError:
+                time.sleep(0.1)
+    # If no locking available, proceed without locking (less robust but functional)
+
+
+def _unlock_file(f):
+    """Cross-platform file unlocking."""
+    if HAS_FCNTL:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    elif HAS_MSVCRT:
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
@@ -83,16 +124,107 @@ class HeadlessPMMCPServer:
         self.agent_skill_level: Optional[str] = None
         self.token_tracker = TokenTracker()
         self._api_process: Optional[subprocess.Popen] = None
+        self._api_server_pid: Optional[int] = None  # Track actual server process PID
+        self._we_started_api = False  # Track whether WE started the API process
+        self._client_id = f"mcp_{os.getpid()}_{int(time.time())}"  # Unique client identifier
+        self._shutdown_requested = asyncio.Event()
 
         # Register handlers
         self._register_handlers()
+        
+        # Set up signal handlers for graceful shutdown (asyncio-compatible)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.add_signal_handler(signal.SIGTERM, self._handle_shutdown_signal)
+            loop.add_signal_handler(signal.SIGINT, self._handle_shutdown_signal)
+        except (RuntimeError, NotImplementedError):
+            # Signal handling not available (Windows or no event loop)
+            pass
+
+    def _handle_shutdown_signal(self):
+        """Handle shutdown signals (SIGTERM, SIGINT)."""
+        logger.info("Received shutdown signal, initiating graceful shutdown...")
+        self._shutdown_requested.set()
+
+    async def _perform_cleanup(self):
+        """Perform cleanup of API process using reference counting coordination."""
+        # Prevent multiple concurrent cleanup calls
+        if hasattr(self, '_cleanup_in_progress') and self._cleanup_in_progress:
+            logger.info("Cleanup already in progress, skipping...")
+            return
+
+        # Mark cleanup as in progress
+        self._cleanup_in_progress = True
+        
+        try:
+            # Unregister this MCP client and check if we should cleanup API
+            should_cleanup_api = self._unregister_mcp_client()
+            
+            if not should_cleanup_api:
+                logger.info("Other MCP clients still active, leaving API running")
+                return
+            
+            # Only clean up APIs that we actually started
+            # Don't clean up pre-existing APIs that we just connected to
+            if not self._we_started_api:
+                logger.info("API was not started by this MCP client, leaving it running")
+                return
+                
+            if not self._api_server_pid:
+                logger.info("No API process PID tracked, cannot clean up")
+                return
+
+            cleanup_pid = self._api_server_pid  # Capture PID in case it changes
+            
+            logger.info(f"Last MCP client - cleaning up API process (PID: {cleanup_pid})...")
+
+            # Terminate the API server process (we're the last client)
+            try:
+                server_process = psutil.Process(cleanup_pid)
+                
+                # Verify this is still a server process before terminating
+                cmdline = server_process.cmdline()
+                if not any('uvicorn' in str(arg) or 'src.main' in str(arg) for arg in cmdline):
+                    logger.warning(f"PID {cleanup_pid} doesn't appear to be a server process, skipping termination")
+                    return
+                
+                logger.info(f"Terminating API server process (PID: {cleanup_pid})...")
+                server_process.terminate()
+                
+                # Wait for graceful termination
+                try:
+                    server_process.wait(timeout=5)
+                    logger.info("✅ HeadlessPM API process terminated gracefully")
+                except psutil.TimeoutExpired:
+                    logger.warning("API process did not stop gracefully, forcing shutdown...")
+                    try:
+                        server_process.kill()
+                        server_process.wait(timeout=2)
+                        logger.info("✅ HeadlessPM API process force-killed")
+                    except psutil.NoSuchProcess:
+                        logger.info("Process already terminated during force-kill")
+                        
+            except psutil.NoSuchProcess:
+                logger.info("API server process already terminated")
+            except psutil.AccessDenied:
+                logger.error(f"Access denied when terminating PID {cleanup_pid} - insufficient permissions")
+            except Exception as e:
+                logger.error(f"Error terminating API server process: {e}")
+                
+        finally:
+            # Clear the references and cleanup flag
+            self._api_server_pid = None
+            self._we_started_api = False
+            self._cleanup_in_progress = False
 
     async def ensure_api_available(self) -> bool:
         """Ensure HeadlessPM API is available using connection-first pattern."""
         # Extract host and port from base_url
-        import urllib.parse
         parsed = urllib.parse.urlparse(self.base_url)
         port = parsed.port or 6969
+
+        # Register this MCP client for coordination
+        should_start_api = self._register_mcp_client()
 
         # Step 1: Try to connect to existing API
         try:
@@ -100,9 +232,44 @@ class HeadlessPMMCPServer:
             response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
             if response.status_code == 200:
                 logger.info("✅ Connected to existing HeadlessPM API")
+                self._we_started_api = False  # We connected to existing API
+                # Discover the API server PID for proper cleanup coordination
+                api_port = int(os.environ.get("SERVICE_PORT", "6969"))
+                self._api_server_pid = self._find_api_server_pid(api_port)
+                if self._api_server_pid:
+                    logger.info(f"Discovered existing API server PID: {self._api_server_pid}")
+                    # Mark that we discovered an existing API (enables handoff cleanup)
+                    self._discovered_existing_api = True
+                else:
+                    logger.warning("Could not discover existing API server PID - cleanup may not work properly")
                 return True
         except Exception:
             logger.info("No existing API found")
+
+        # Only attempt to start if coordination says we should
+        if not should_start_api:
+            logger.info("Another MCP client should be starting the API, waiting...")
+            # Wait a bit and try connecting again
+            for attempt in range(10):
+                await asyncio.sleep(1)
+                try:
+                    response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
+                    if response.status_code == 200:
+                        logger.info("✅ Connected to API started by another MCP client")
+                        self._we_started_api = False
+                        # Discover the API server PID for proper cleanup coordination
+                        api_port = int(os.environ.get("SERVICE_PORT", "6969"))
+                        self._api_server_pid = self._find_api_server_pid(api_port)
+                        if self._api_server_pid:
+                            logger.info(f"Discovered API server PID from another client: {self._api_server_pid}")
+                            # Mark that we discovered an existing API (enables handoff cleanup)
+                            self._discovered_existing_api = True
+                        else:
+                            logger.warning("Could not discover API server PID - cleanup may not work properly")
+                        return True
+                except Exception:
+                    continue
+            logger.warning("Timeout waiting for another MCP client to start API")
 
         # Check if auto-start is disabled
         if os.environ.get("HEADLESS_PM_NO_AUTOSTART"):
@@ -141,6 +308,15 @@ class HeadlessPMMCPServer:
                     response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
                     if response.status_code == 200:
                         logger.info("✅ Successfully started HeadlessPM API")
+                        # Mark that WE started this API process
+                        self._we_started_api = True
+                        # Discover the actual server process PID for proper cleanup
+                        port = int(os.environ.get("SERVICE_PORT", "6969"))
+                        self._api_server_pid = self._find_api_server_pid(port)
+                        if self._api_server_pid:
+                            logger.info(f"Discovered API server PID: {self._api_server_pid}")
+                        else:
+                            logger.warning("Could not discover API server PID - cleanup may not work properly")
                         return True
                 except Exception:
                     continue
@@ -256,6 +432,146 @@ class HeadlessPMMCPServer:
         logger.error("   Install: pip install headless-pm")
         logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
         return None
+
+    def _find_api_server_pid(self, port: int) -> Optional[int]:
+        """Find the PID of the actual API server process listening on the given port."""
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Get process connections directly (not from attrs)  
+                    connections = proc.net_connections(kind='inet')
+                    
+                    for conn in connections:
+                        if (conn.status == psutil.CONN_LISTEN and 
+                            conn.laddr.port == port):
+                            
+                            # Additional validation: check if it's likely a web server
+                            cmdline = proc.info.get('cmdline', [])
+                            if cmdline and any('uvicorn' in str(arg) or 'src.main' in str(arg) for arg in cmdline):
+                                logger.info(f"Found API server process: PID={proc.info['pid']} cmdline={cmdline}")
+                                return proc.info['pid']
+                            
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                except Exception as e:
+                    logger.debug(f"Error checking process {proc.info.get('pid', 'unknown')}: {e}")
+                    continue
+            
+            logger.info(f"No API server process found listening on port {port}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error during process discovery: {e}")
+            return None
+
+    def _get_mcp_coordination_file(self) -> Path:
+        """Get path to MCP client coordination file using platform-appropriate temp directory."""
+        temp_dir = Path(tempfile.gettempdir())
+        port = os.environ.get('SERVICE_PORT', '6969')
+        return temp_dir / f"headless_pm_mcp_clients_{port}.json"
+
+    def _register_mcp_client(self) -> bool:
+        """Register this MCP client and return True if we should start API."""
+        coordination_file = self._get_mcp_coordination_file()
+        
+        try:
+            # Use file locking for atomic operations
+            with open(coordination_file, 'a+') as f:
+                _lock_file(f)
+                f.seek(0)
+                
+                try:
+                    data = json.load(f) if f.read().strip() else {}
+                except json.JSONDecodeError:
+                    data = {}
+                
+                f.seek(0)
+                f.truncate()
+                
+                # Clean up stale entries (processes that no longer exist)
+                active_clients = {}
+                for client_id, info in data.get('clients', {}).items():
+                    try:
+                        pid = info.get('pid')
+                        if pid and psutil.pid_exists(pid):
+                            active_clients[client_id] = info
+                    except:
+                        pass  # Remove stale entries
+                
+                # Add this client
+                active_clients[self._client_id] = {
+                    'pid': os.getpid(),
+                    'timestamp': time.time()
+                }
+                
+                # Update data
+                data['clients'] = active_clients
+                data['api_pid'] = data.get('api_pid')  # Preserve existing API PID
+                
+                json.dump(data, f, indent=2)
+                _unlock_file(f)
+                
+                # Return True if this is the first client (should start API)
+                should_start = len(active_clients) == 1
+                logger.info(f"Registered MCP client {self._client_id} ({len(active_clients)} total clients)")
+                return should_start
+                
+        except Exception as e:
+            logger.warning(f"Could not register MCP client: {e}")
+            return True  # Default to starting API if coordination fails
+
+    def _unregister_mcp_client(self) -> bool:
+        """Unregister this MCP client and return True if we should cleanup API."""
+        coordination_file = self._get_mcp_coordination_file()
+        
+        try:
+            if not coordination_file.exists():
+                return False
+                
+            with open(coordination_file, 'r+') as f:
+                _lock_file(f)
+                
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    data = {}
+                
+                clients = data.get('clients', {})
+                clients.pop(self._client_id, None)
+                
+                # Clean up stale entries
+                active_clients = {}
+                for client_id, info in clients.items():
+                    try:
+                        pid = info.get('pid')
+                        if pid and psutil.pid_exists(pid):
+                            active_clients[client_id] = info
+                    except:
+                        pass
+                
+                data['clients'] = active_clients
+                
+                f.seek(0)
+                f.truncate()
+                json.dump(data, f, indent=2)
+                _unlock_file(f)
+                
+                # Return True if this was the last client (should cleanup API)
+                should_cleanup = len(active_clients) == 0
+                logger.info(f"Unregistered MCP client {self._client_id} ({len(active_clients)} remaining clients)")
+                
+                # Remove coordination file if no clients remain
+                if should_cleanup:
+                    try:
+                        coordination_file.unlink()
+                    except:
+                        pass
+                
+                return should_cleanup
+                
+        except Exception as e:
+            logger.warning(f"Could not unregister MCP client: {e}")
+            return False  # Default to not cleaning up if coordination fails
 
     def _get_venv_commands(self) -> List[List[str]]:
         """Get virtual environment commands to try."""
@@ -951,52 +1267,63 @@ class HeadlessPMMCPServer:
 
         try:
             async with stdio_server() as (read_stream, write_stream):
-                await self.server.run(
-                    read_stream,
-                    write_stream,
-                    InitializationOptions(
-                        server_name="headless-pm",
-                        server_version="1.0.0",
-                        capabilities=self.server.get_capabilities(
-                            notification_options=NotificationOptions(
-                                prompts_changed=True,
-                                resources_changed=True,
-                                tools_changed=True
-                            ),
-                            experimental_capabilities={}
+                # Create server task
+                server_task = asyncio.create_task(
+                    self.server.run(
+                        read_stream,
+                        write_stream,
+                        InitializationOptions(
+                            server_name="headless-pm",
+                            server_version="1.0.0",
+                            capabilities=self.server.get_capabilities(
+                                notification_options=NotificationOptions(
+                                    prompts_changed=True,
+                                    resources_changed=True,
+                                    tools_changed=True
+                                ),
+                                experimental_capabilities={}
+                            )
                         )
                     )
                 )
+                
+                # Wait for either server completion or shutdown signal
+                shutdown_task = asyncio.create_task(self._shutdown_requested.wait())
+                
+                try:
+                    done, pending = await asyncio.wait(
+                        [server_task, shutdown_task],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    # Cancel any remaining tasks
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                            
+                    # If shutdown was requested, perform cleanup
+                    if self._shutdown_requested.is_set():
+                        logger.info("Performing graceful shutdown...")
+                        await self._perform_cleanup()
+                        
+                except asyncio.CancelledError:
+                    logger.info("Server task cancelled, performing cleanup...")
+                    await self._perform_cleanup()
+                    raise
         finally:
             # Save token usage on shutdown
             if self.agent_id:
                 self.token_tracker.end_session(self.agent_id)
+
+            # Backup cleanup in case signal handler didn't run
+            if not self._shutdown_requested.is_set():
+                logger.info("Signal handler didn't run, performing backup cleanup...")
+                await self._perform_cleanup()
+
             await self.client.aclose()
-
-            # Clean up subprocess if we started one
-            if self._api_process and self._api_process.poll() is None:
-                # Only terminate if we can confirm API is idle (no other clients)
-                try:
-                    # Quick check if API is still healthy and potentially serving other clients
-                    response = await self.client.get(f"{self.base_url}/api/v1/agents", timeout=2.0)
-                    if response.status_code == 200:
-                        agents = response.json()
-                        if len(agents) > 1:  # Other agents still active
-                            logger.info("Other MCP clients active, leaving API process running")
-                            return
-                except Exception:
-                    pass  # If check fails, proceed with cleanup as failsafe
-
-                logger.info("Cleaning up HeadlessPM API process...")
-                self._api_process.terminate()
-                try:
-                    self._api_process.wait(timeout=5)
-                    logger.info("✅ HeadlessPM API process terminated gracefully")
-                except subprocess.TimeoutExpired:
-                    logger.warning("API process did not stop gracefully, forcing shutdown...")
-                    self._api_process.kill()
-                    self._api_process.wait()
-                    logger.info("✅ HeadlessPM API process force-killed")
 
 
 async def main():

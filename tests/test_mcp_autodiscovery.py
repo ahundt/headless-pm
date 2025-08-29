@@ -132,7 +132,9 @@ class TestMCPAutoDiscovery:
                 response = await client.get("http://localhost:6969/health")
                 assert response.status_code == 200
                 
-                response = await client.get("http://localhost:6969/api/v1/context")
+                # Test authenticated endpoint
+                headers = {"X-API-Key": "XXXXXX"}
+                response = await client.get("http://localhost:6969/api/v1/context", headers=headers)
                 assert response.status_code == 200
                 
         finally:
@@ -354,3 +356,177 @@ class TestMCPAutoDiscovery:
         parsed = urllib.parse.urlparse(server.base_url)
         port = parsed.port or 6969
         assert port == 6969, "Should parse port correctly"
+
+    @pytest.mark.asyncio
+    async def test_api_functionality_with_http_client(self, mcp_server_path):
+        """Test API functionality using Python HTTP client like a real client."""
+        self.ensure_no_api_running()
+        
+        # Start MCP server process
+        mcp_process = subprocess.Popen([
+            "python", str(mcp_server_path)
+        ], 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=mcp_server_path.parent.parent.parent,
+        env={**os.environ, "SERVICE_PORT": "6969"}
+        )
+        
+        try:
+            # Wait for API to start
+            api_started = False
+            for attempt in range(30):
+                await asyncio.sleep(0.5)
+                if await self.is_api_running():
+                    api_started = True
+                    break
+            
+            assert api_started, "API should have started"
+            
+            # Test various endpoints with HTTP client
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Test unauthenticated health endpoint
+                response = await client.get("http://localhost:6969/health")
+                assert response.status_code == 200, f"health endpoint should return 200, got {response.status_code}"
+                
+                # Test authenticated endpoints with API key
+                headers = {"X-API-Key": "XXXXXX"}
+                
+                authenticated_endpoints = [
+                    ("context", "http://localhost:6969/api/v1/context"),
+                    ("agents", "http://localhost:6969/api/v1/agents"),
+                ]
+                
+                for test_name, url in authenticated_endpoints:
+                    response = await client.get(url, headers=headers)
+                    assert response.status_code == 200, f"{test_name} endpoint should return 200, got {response.status_code}"
+                
+        finally:
+            if mcp_process.poll() is None:
+                mcp_process.terminate()
+                mcp_process.wait()
+            self.ensure_no_api_running()
+
+    @pytest.mark.asyncio
+    async def test_multiple_mcp_clients_scenario(self, mcp_server_path):
+        """Test multiple MCP clients connecting to same API instance."""
+        self.ensure_no_api_running()
+        
+        # Start first MCP server (should start API)
+        mcp1_process = subprocess.Popen([
+            "python", str(mcp_server_path)
+        ], 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=mcp_server_path.parent.parent.parent,
+        env={**os.environ, "SERVICE_PORT": "6969"}
+        )
+        
+        try:
+            # Wait for API to start
+            api_started = False
+            for attempt in range(30):
+                await asyncio.sleep(0.5)
+                if await self.is_api_running():
+                    api_started = True
+                    break
+            
+            assert api_started, "API should have started from first MCP client"
+            
+            # Start second MCP server (should connect to existing API)
+            mcp2_process = subprocess.Popen([
+                "python", str(mcp_server_path)
+            ], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=mcp_server_path.parent.parent.parent,
+            env={**os.environ, "SERVICE_PORT": "6969"}
+            )
+            
+            try:
+                await asyncio.sleep(2)  # Give second client time to connect
+                
+                # API should still be running
+                assert await self.is_api_running(), "API should still be running with two clients"
+                
+                # Terminate first client
+                if mcp1_process.poll() is None:
+                    mcp1_process.terminate()
+                    mcp1_process.wait(timeout=5)
+                
+                await asyncio.sleep(1)
+                
+                # API should still be running (second client active)
+                assert await self.is_api_running(), "API should remain running with second client active"
+                
+            finally:
+                if mcp2_process.poll() is None:
+                    mcp2_process.terminate()
+                    mcp2_process.wait(timeout=5)
+                    
+        finally:
+            if mcp1_process.poll() is None:
+                mcp1_process.terminate()
+                mcp1_process.wait()
+            self.ensure_no_api_running()
+
+    @pytest.mark.asyncio
+    async def test_api_endpoint_comprehensive_functionality(self, mcp_server_path):
+        """Test comprehensive API functionality once launched by MCP server."""
+        self.ensure_no_api_running()
+        
+        # Start MCP server
+        mcp_process = subprocess.Popen([
+            "python", str(mcp_server_path)
+        ], 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=mcp_server_path.parent.parent.parent,
+        env={**os.environ, "SERVICE_PORT": "6969"}
+        )
+        
+        try:
+            # Wait for API to start
+            api_started = False
+            for attempt in range(30):
+                await asyncio.sleep(0.5)
+                if await self.is_api_running():
+                    api_started = True
+                    break
+            
+            assert api_started, "API should have started"
+            
+            # Test comprehensive API functionality
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Test health endpoint (no auth required)
+                response = await client.get("http://localhost:6969/health")
+                assert response.status_code == 200
+                health_data = response.json()
+                assert "status" in health_data
+                
+                # Set up authentication headers
+                headers = {"X-API-Key": "XXXXXX"}
+                
+                # Test context endpoint (auth required)
+                response = await client.get("http://localhost:6969/api/v1/context", headers=headers)
+                assert response.status_code == 200
+                context_data = response.json()
+                assert "project_name" in context_data or "name" in context_data
+                
+                # Skip docs endpoint test - not critical for MCP auto-discovery validation
+                
+                # Test that agents endpoint exists (auth required)
+                response = await client.get("http://localhost:6969/api/v1/agents", headers=headers)
+                assert response.status_code == 200
+                agents_data = response.json()
+                assert isinstance(agents_data, list)  # Should return list of agents
+                
+        finally:
+            if mcp_process.poll() is None:
+                mcp_process.terminate()
+                mcp_process.wait()
+            self.ensure_no_api_running()
