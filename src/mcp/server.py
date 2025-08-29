@@ -1,6 +1,29 @@
 """
 Headless PM MCP Server - Model Context Protocol server for Headless PM integration
 Provides standardized interface for Claude Code and other MCP clients.
+
+Environment Variables:
+    HEADLESS_PM_COMMAND: Full command to start HeadlessPM (overrides all discovery)
+    HEADLESS_PM_DIR: Project/working directory for HeadlessPM
+    HEADLESS_PM_NO_AUTOSTART: Skip auto-start, connection-only mode (any non-empty value)
+    HEADLESS_PM_URL: API base URL (overrides default, e.g., http://localhost:6969)
+    SERVICE_PORT: HeadlessPM API port (default: 6969)
+
+Design Principles:
+    1. Connection-first: Try existing API before starting new process
+    2. Smart discovery: Prioritize same Python interpreter for consistency
+    3. Simple configuration: Minimal, non-redundant environment variables
+    4. Context preservation: Respect user's working directory when possible
+
+Example Usage:
+    # Connection-only mode
+    HEADLESS_PM_NO_AUTOSTART=1 headless-pm-mcp
+
+    # Override discovery with specific command
+    HEADLESS_PM_COMMAND="uv run headless-pm" headless-pm-mcp
+
+    # Run in specific directory
+    HEADLESS_PM_DIR=/path/to/project headless-pm-mcp
 """
 
 import asyncio
@@ -51,7 +74,8 @@ class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
     def __init__(self, base_url: str = "http://localhost:6969"):
-        self.base_url = base_url.rstrip('/')
+        # Prioritize env var, then constructor arg (maintains backward compatibility)
+        self.base_url = (os.getenv('HEADLESS_PM_URL') or base_url).rstrip('/')
         self.server = Server("headless-pm")
         self.client = httpx.AsyncClient(timeout=30.0)
         self.agent_id: Optional[str] = None
@@ -64,16 +88,12 @@ class HeadlessPMMCPServer:
         self._register_handlers()
 
     async def ensure_api_available(self) -> bool:
-        """Ensure HeadlessPM API is available using simple connection-first pattern.
-        
-        Returns:
-            True if API is available, False if failed to start/connect
-        """
+        """Ensure HeadlessPM API is available using connection-first pattern."""
         # Extract host and port from base_url
         import urllib.parse
         parsed = urllib.parse.urlparse(self.base_url)
         port = parsed.port or 6969
-        
+
         # Step 1: Try to connect to existing API
         try:
             logger.info(f"Checking for existing API at {self.base_url}...")
@@ -82,27 +102,38 @@ class HeadlessPMMCPServer:
                 logger.info("✅ Connected to existing HeadlessPM API")
                 return True
         except Exception:
-            logger.info("No existing API found, attempting to start...")
-        
+            logger.info("No existing API found")
+
+        # Check if auto-start is disabled
+        if os.environ.get("HEADLESS_PM_NO_AUTOSTART"):
+            logger.info("Auto-start disabled via HEADLESS_PM_NO_AUTOSTART")
+            return False
+
         # Step 2: Try to start API process
+        logger.info("Attempting to start HeadlessPM API...")
         try:
             # Find headless-pm executable in common locations
             headless_pm_cmd = self._find_headless_pm_command()
             if not headless_pm_cmd:
-                logger.error("❌ headless-pm command not found in PATH")
+                logger.error("❌ headless-pm command not found")
+                logger.error("   Install: pip install headless-pm")
+                logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
                 return False
-                
+
             logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd}")
-            
-            # Start as subprocess with minimal output
+
+            # Determine working directory with better user context preservation
+            working_dir = self._determine_working_directory(headless_pm_cmd)
+
+            # Start API process
             self._api_process = subprocess.Popen(
                 headless_pm_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                # Set environment to use same port
+                cwd=working_dir,
                 env={**os.environ, "SERVICE_PORT": str(port)}
             )
-            
+
             # Step 3: Wait for API to become available (with retries)
             for attempt in range(12):  # 12 attempts over 6 seconds
                 try:
@@ -113,47 +144,155 @@ class HeadlessPMMCPServer:
                         return True
                 except Exception:
                     continue
-            
+
             # If we get here, startup failed
             if self._api_process.poll() is None:
-                # Process still running but not responding
                 logger.error(f"❌ API process started but not responding at {self.base_url}")
                 self._api_process.terminate()
             else:
-                # Process exited
                 logger.error("❌ API process exited during startup")
-            
+
             self._api_process = None
             return False
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to start HeadlessPM API: {e}")
             return False
 
-    def _find_headless_pm_command(self) -> Optional[List[str]]:
-        """Find headless-pm command in common locations."""
-        # Try different command variations
+    def _find_project_directory(self) -> Optional[Path]:
+        """Find HeadlessPM project directory by searching common locations."""
+        # Check environment variable first (highest priority)
+        if "HEADLESS_PM_DIR" in os.environ:
+            env_dir = Path(os.environ["HEADLESS_PM_DIR"])
+            if env_dir.exists():
+                return env_dir
+
+        # Smart discovery: look for pyproject.toml with headless-pm
         candidates = [
-            ["headless-pm"],                    # Global install
-            ["python", "-m", "src.main"],      # From source directory
-            ["uvicorn", "src.main:app", "--host", "0.0.0.0"],  # Fallback uvicorn
+            Path.cwd(),  # Current directory
+            Path.cwd() / "headless-pm",  # Subdirectory
+            Path.home() / "source" / "agentic" / "headless-pm",  # Common dev path
         ]
-        
-        for cmd in candidates:
-            try:
-                # Test if command exists and is executable
-                result = subprocess.run(
-                    cmd + ["--help"], 
-                    capture_output=True, 
-                    timeout=3,
-                    cwd=Path.cwd()
-                )
-                if result.returncode == 0:
-                    return cmd
-            except Exception:
-                continue
-                
+
+        for candidate in candidates:
+            if (candidate / "pyproject.toml").exists():
+                try:
+                    content = (candidate / "pyproject.toml").read_text()
+                    if 'name = "headless-pm"' in content:
+                        return candidate
+                except Exception:
+                    continue
         return None
+
+    def _get_current_python(self) -> str:
+        """Get the current Python interpreter path."""
+        return sys.executable
+
+    def _determine_working_directory(self, cmd: List[str]) -> Optional[Path]:
+        """Determine working directory for the command."""
+        # Use explicit directory if set
+        if "HEADLESS_PM_DIR" in os.environ:
+            return Path(os.environ["HEADLESS_PM_DIR"])
+
+        # Commands that need project context
+        needs_project_context = any([
+            "src.main" in str(cmd),
+            "uv" in cmd and any(x in cmd for x in ["run", "start", "api-only"])
+        ])
+
+        if needs_project_context:
+            project_dir = self._find_project_directory()
+            if project_dir:
+                return project_dir
+
+        # Default: preserve user's working directory
+        return None  # None means use current directory
+
+    def _find_headless_pm_command(self) -> Optional[List[str]]:
+        """Find headless-pm command using smart discovery."""
+        # Environment override - highest priority
+        if "HEADLESS_PM_COMMAND" in os.environ:
+            return os.environ["HEADLESS_PM_COMMAND"].split()
+
+        current_python = self._get_current_python()
+
+        # Build candidate commands in priority order
+        candidates = [
+            # 1. Global installations
+            ["headless-pm"],
+            ["headless-pm-mcp"],
+
+            # 2. Same Python interpreter (consistency)
+            [current_python, "-m", "headless_pm"],
+
+            # 3. UV commands
+            ["uv", "run", "headless-pm"],
+            ["uv", "run", "start"],
+
+            # 4. Virtual environments
+            *self._get_venv_commands(),
+
+            # 5. Direct Python execution
+            ["python3", "-m", "headless_pm"],
+            ["python", "-m", "headless_pm"],
+        ]
+
+        # Add project-specific commands if project found
+        project_dir = self._find_project_directory()
+        if project_dir:
+            candidates.extend([
+                [current_python, "-m", "src.main"],
+                ["python3", "-m", "src.main"],
+                ["uv", "run", "--", "python", "-m", "src.main"],
+                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "6969"],
+            ])
+
+        # Test candidates
+        for cmd in candidates:
+            if self._test_command(cmd, self._determine_working_directory(cmd)):
+                return cmd
+
+        logger.error("❌ No working HeadlessPM command found")
+        logger.error("   Install: pip install headless-pm")
+        logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
+        return None
+
+    def _get_venv_commands(self) -> List[List[str]]:
+        """Get virtual environment commands to try."""
+        commands = []
+        project_dir = self._find_project_directory()
+        # Search in CWD first, then project_dir if it's different
+        search_dirs = [Path.cwd()]
+        if project_dir and project_dir != Path.cwd():
+            search_dirs.append(project_dir)
+
+        for venv_name in [".venv", "venv", "claude_venv"]:
+            for base_dir in search_dirs:
+                venv_path = base_dir / venv_name / "bin" / "headless-pm"
+                if venv_path.exists():
+                    commands.append([str(venv_path)])
+        return commands
+
+    def _test_command(self, cmd: List[str], working_dir: Optional[Path]) -> bool:
+        """Test if a command is executable and working."""
+        try:
+            # Skip non-existent venv binaries quickly
+            if len(cmd) == 1 and "/" in cmd[0] and not Path(cmd[0]).exists():
+                return False
+
+            # Use --help for general compatibility
+            test_args = cmd + ["--help"]
+
+            result = subprocess.run(
+                test_args,
+                capture_output=True,
+                timeout=3,
+                cwd=working_dir or Path.cwd(),
+                env=os.environ
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
 
     def _register_handlers(self):
         """Register MCP handlers."""
@@ -161,77 +300,228 @@ class HeadlessPMMCPServer:
         @self.server.list_tools()
         async def handle_list_tools() -> ListToolsResult:
             """List available tools."""
-            logger.info("Starting handle_list_tools() - preparing to create 12 Tool objects")
-            
-            try:
-                # Create first tool with debug logging
-                logger.info("Creating Tool 1: register_agent")
-                tool1 = Tool(
-                    name="register_agent",
-                    description="Register agent with Headless PM system",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "agent_id": {
-                                "type": "string",
-                                "description": "Unique identifier for the agent"
+            return ListToolsResult(
+                tools=[
+                    Tool(
+                        name="register_agent",
+                        description="Register agent with Headless PM system",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "agent_id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for the agent"
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "description": "Agent role (frontend_dev, backend_dev, architect, pm, qa)",
+                                    "enum": ["frontend_dev", "backend_dev", "architect", "pm", "qa"]
+                                },
+                                "skill_level": {
+                                    "type": "string",
+                                    "description": "Agent skill level",
+                                    "enum": ["junior", "senior", "principal"],
+                                    "default": "senior"
+                                }
                             },
-                            "role": {
-                                "type": "string",
-                                "description": "Agent role (frontend_dev, backend_dev, architect, pm, qa)",
-                                "enum": ["frontend_dev", "backend_dev", "architect", "pm", "qa"]
-                            },
-                            "skill_level": {
-                                "type": "string",
-                                "description": "Agent skill level",
-                                "enum": ["junior", "senior", "principal"],
-                                "default": "senior"
+                            "required": ["agent_id", "role"]
+                        }
+                    ),
+                    Tool(
+                        name="get_project_context",
+                        description="Get project configuration and context information",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {}
+                        }
+                    ),
+                    Tool(
+                        name="get_next_task",
+                        description="Get next available task for the registered agent",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string",
+                                    "description": "Override agent role for task search"
+                                },
+                                "skill_level": {
+                                    "type": "string",
+                                    "description": "Override skill level for task search"
+                                }
                             }
-                        },
-                        "required": ["agent_id", "role"]
-                    }
-                )
-                logger.info(f"Successfully created tool1: {tool1}")
-                
-                # Create the tools list
-                tools_list = [tool1]
-                logger.info(f"Created tools_list: {tools_list}")
-                logger.info(f"tools_list type: {type(tools_list)}")
-                logger.info(f"tools_list[0] type: {type(tools_list[0])}")
-                
-                # Create ListToolsResult
-                logger.info("Creating ListToolsResult...")
-                result = ListToolsResult(tools=tools_list)
-                logger.info(f"Successfully created ListToolsResult: {result}")
-                logger.info(f"ListToolsResult.tools type: {type(result.tools)}")
-                logger.info(f"ListToolsResult.tools[0] type: {type(result.tools[0])}")
-                
-                # Test JSON serialization to see where error occurs
-                try:
-                    import json
-                    logger.info("Testing Tool JSON serialization...")
-                    tool_dict = tool1.model_dump()
-                    logger.info(f"Tool.model_dump() succeeded: {tool_dict}")
-                    
-                    logger.info("Testing ListToolsResult JSON serialization...")
-                    result_dict = result.model_dump()
-                    logger.info(f"ListToolsResult.model_dump() succeeded: {len(str(result_dict))} chars")
-                    
-                except Exception as serialize_error:
-                    logger.error(f"JSON serialization error: {serialize_error}")
-                    logger.error(f"Serialization error type: {type(serialize_error)}")
-                    import traceback
-                    logger.error(f"Serialization traceback: {traceback.format_exc()}")
-                
-                return result
-            
-            except Exception as e:
-                logger.error(f"Error creating Tool objects in handle_list_tools(): {e}")
-                logger.error(f"Exception type: {type(e)}")
-                logger.error(f"Exception args: {e.args}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                raise
+                        }
+                    ),
+                    Tool(
+                        name="create_task",
+                        description="Create a new task",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "Task title"
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Detailed task description"
+                                },
+                                "complexity": {
+                                    "type": "string",
+                                    "description": "Task complexity level",
+                                    "enum": ["minor", "major"]
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "description": "Required role for the task"
+                                },
+                                "skill_level": {
+                                    "type": "string",
+                                    "description": "Required skill level for the task",
+                                    "enum": ["junior", "senior", "principal"]
+                                }
+                            },
+                            "required": ["title", "description", "complexity"]
+                        }
+                    ),
+                    Tool(
+                        name="lock_task",
+                        description="Lock a task to prevent other agents from picking it up",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "task_id": {
+                                    "type": "integer",
+                                    "description": "ID of the task to lock"
+                                }
+                            },
+                            "required": ["task_id"]
+                        }
+                    ),
+                    Tool(
+                        name="update_task_status",
+                        description="Update task status and progress",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "task_id": {
+                                    "type": "integer",
+                                    "description": "ID of the task to update"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "description": "New task status",
+                                    "enum": ["created", "assigned", "under_work", "dev_done", "testing", "completed",
+                                             "blocked"]
+                                },
+                                "notes": {
+                                    "type": "string",
+                                    "description": "Optional notes about the update"
+                                }
+                            },
+                            "required": ["task_id", "status"]
+                        }
+                    ),
+                    Tool(
+                        name="create_document",
+                        description="Create a document with optional @mentions for team communication",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "Document title"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Document content (supports @mentions)"
+                                },
+                                "doc_type": {
+                                    "type": "string",
+                                    "description": "Document type",
+                                    "default": "note"
+                                },
+                                "mentions": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "List of agent IDs to mention"
+                                }
+                            },
+                            "required": ["title", "content"]
+                        }
+                    ),
+                    Tool(
+                        name="get_mentions",
+                        description="Get notifications and mentions for the registered agent",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {}
+                        }
+                    ),
+                    Tool(
+                        name="register_service",
+                        description="Register a microservice with the system",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "service_name": {
+                                    "type": "string",
+                                    "description": "Name of the service"
+                                },
+                                "service_url": {
+                                    "type": "string",
+                                    "description": "Service URL"
+                                },
+                                "health_check_url": {
+                                    "type": "string",
+                                    "description": "Health check endpoint URL"
+                                }
+                            },
+                            "required": ["service_name", "service_url"]
+                        }
+                    ),
+                    Tool(
+                        name="send_heartbeat",
+                        description="Send heartbeat for a registered service",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "service_name": {
+                                    "type": "string",
+                                    "description": "Name of the service"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "description": "Service status",
+                                    "default": "healthy"
+                                }
+                            },
+                            "required": ["service_name"]
+                        }
+                    ),
+                    Tool(
+                        name="poll_changes",
+                        description="Poll for system changes since a given timestamp",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "since_timestamp": {
+                                    "type": "string",
+                                    "description": "ISO timestamp to poll changes since"
+                                }
+                            }
+                        }
+                    ),
+                    Tool(
+                        name="get_token_usage",
+                        description="Get MCP token usage statistics",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {}
+                        }
+                    )
+                ]
+            )
 
         @self.server.list_resources()
         async def handle_list_resources() -> ListResourcesResult:
@@ -397,6 +687,7 @@ class HeadlessPMMCPServer:
         }
 
         response = await self.client.post(f"{self.base_url}/api/v1/register", json=data)
+        response.raise_for_status()
         result = response.json()
 
         call_result = CallToolResult(
@@ -407,7 +698,7 @@ class HeadlessPMMCPServer:
                 )
             ]
         )
-        
+
         # Track response tokens
         self.token_tracker.track_response(result)
         return call_result
@@ -415,6 +706,7 @@ class HeadlessPMMCPServer:
     async def _get_project_context(self, args: Dict[str, Any]) -> CallToolResult:
         """Get project context."""
         response = await self.client.get(f"{self.base_url}/api/v1/context")
+        response.raise_for_status()
         result = response.json()
 
         return CallToolResult(
@@ -434,6 +726,7 @@ class HeadlessPMMCPServer:
         }
 
         response = await self.client.get(f"{self.base_url}/api/v1/tasks/next", params=params)
+        response.raise_for_status()
         result = response.json()
 
         if not result:
@@ -466,6 +759,7 @@ class HeadlessPMMCPServer:
         }
 
         response = await self.client.post(f"{self.base_url}/api/v1/tasks/create", json=data)
+        response.raise_for_status()
         result = response.json()
 
         return CallToolResult(
@@ -483,6 +777,7 @@ class HeadlessPMMCPServer:
         data = {"agent_id": self.agent_id}
 
         response = await self.client.post(f"{self.base_url}/api/v1/tasks/{task_id}/lock", json=data)
+        response.raise_for_status()
 
         return CallToolResult(
             content=[
@@ -505,6 +800,7 @@ class HeadlessPMMCPServer:
             data["notes"] = args["notes"]
 
         response = await self.client.put(f"{self.base_url}/api/v1/tasks/{task_id}/status", json=data)
+        response.raise_for_status()
 
         return CallToolResult(
             content=[
@@ -528,6 +824,7 @@ class HeadlessPMMCPServer:
             data["mentions"] = args["mentions"]
 
         response = await self.client.post(f"{self.base_url}/api/v1/documents", json=data)
+        response.raise_for_status()
         result = response.json()
 
         mentions_text = ""
@@ -547,6 +844,7 @@ class HeadlessPMMCPServer:
         """Get mentions for the agent."""
         params = {"agent_id": self.agent_id}
         response = await self.client.get(f"{self.base_url}/api/v1/mentions", params=params)
+        response.raise_for_status()
         result = response.json()
 
         if not result:
@@ -580,6 +878,7 @@ class HeadlessPMMCPServer:
             data["health_check_url"] = args["health_check_url"]
 
         response = await self.client.post(f"{self.base_url}/api/v1/services/register", json=data)
+        response.raise_for_status()
 
         return CallToolResult(
             content=[
@@ -596,6 +895,7 @@ class HeadlessPMMCPServer:
         data = {"status": args.get("status", "healthy")}
 
         response = await self.client.post(f"{self.base_url}/api/v1/services/{service_name}/heartbeat", json=data)
+        response.raise_for_status()
 
         return CallToolResult(
             content=[
@@ -613,6 +913,7 @@ class HeadlessPMMCPServer:
             params["since"] = args["since_timestamp"]
 
         response = await self.client.get(f"{self.base_url}/api/v1/changes", params=params)
+        response.raise_for_status()
         result = response.json()
 
         return CallToolResult(
@@ -627,7 +928,7 @@ class HeadlessPMMCPServer:
     async def _get_token_usage(self, args: Dict[str, Any]) -> CallToolResult:
         """Get token usage statistics."""
         usage_summary = self.token_tracker.get_usage_summary()
-        
+
         result = CallToolResult(
             content=[
                 TextContent(
@@ -636,19 +937,18 @@ class HeadlessPMMCPServer:
                 )
             ]
         )
-        
+
         # Track response tokens
         self.token_tracker.track_response(usage_summary)
         return result
 
     async def run(self):
         """Run the MCP server."""
-        # Ensure API is available before starting MCP server
         if not await self.ensure_api_available():
             logger.error("❌ Could not start or connect to HeadlessPM API")
             logger.error("   Please ensure HeadlessPM is installed or start it manually with: headless-pm")
             return
-            
+
         try:
             async with stdio_server() as (read_stream, write_stream):
                 await self.server.run(
@@ -672,21 +972,35 @@ class HeadlessPMMCPServer:
             if self.agent_id:
                 self.token_tracker.end_session(self.agent_id)
             await self.client.aclose()
-            
-            # Clean up API process if we started it
+
+            # Clean up subprocess if we started one
             if self._api_process and self._api_process.poll() is None:
-                logger.info("Stopping HeadlessPM API process...")
+                # Only terminate if we can confirm API is idle (no other clients)
+                try:
+                    # Quick check if API is still healthy and potentially serving other clients
+                    response = await self.client.get(f"{self.base_url}/api/v1/agents", timeout=2.0)
+                    if response.status_code == 200:
+                        agents = response.json()
+                        if len(agents) > 1:  # Other agents still active
+                            logger.info("Other MCP clients active, leaving API process running")
+                            return
+                except Exception:
+                    pass  # If check fails, proceed with cleanup as failsafe
+
+                logger.info("Cleaning up HeadlessPM API process...")
                 self._api_process.terminate()
                 try:
                     self._api_process.wait(timeout=5)
+                    logger.info("✅ HeadlessPM API process terminated gracefully")
                 except subprocess.TimeoutExpired:
-                    logger.warning("API process did not stop gracefully, killing...")
+                    logger.warning("API process did not stop gracefully, forcing shutdown...")
                     self._api_process.kill()
                     self._api_process.wait()
+                    logger.info("✅ HeadlessPM API process force-killed")
 
 
-async def async_main():
-    """Async main entry point."""
+async def main():
+    """Main entry point."""
     import sys
     import os
 
@@ -700,10 +1014,5 @@ async def async_main():
     await server.run()
 
 
-def main():
-    """Synchronous main entry point for CLI."""
-    asyncio.run(async_main())
-
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

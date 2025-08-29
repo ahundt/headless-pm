@@ -54,7 +54,7 @@ all = [
 [project.scripts]
 headless-pm = "src.main:main"
 headless-pm-cli = "src.cli.main:main"
-headless-pm-mcp = "src.mcp.headless_pm_mcp_server:main"
+headless-pm-mcp = "src.mcp.server:main"
 
 # Project URLs for PyPI and documentation
 [project.urls]

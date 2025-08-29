@@ -71,7 +71,7 @@ def client(session):
 @pytest.fixture
 def mcp_server_path():
     """Get path to MCP server script"""
-    return Path(__file__).parent.parent / "src" / "mcp" / "headless_pm_mcp_server.py"
+    return Path(__file__).parent.parent / "src" / "mcp" / "server.py"
 
 
 @pytest.mark.integration
@@ -340,7 +340,7 @@ class TestMCPAutoDiscovery:
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "mcp"))
         
-        from headless_pm_mcp_server import HeadlessPMMCPServer
+        from server import HeadlessPMMCPServer
         
         # Create server instance
         server = HeadlessPMMCPServer()
