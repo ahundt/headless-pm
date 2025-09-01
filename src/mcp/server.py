@@ -93,12 +93,15 @@ def _lock_file(f):
     if HAS_FCNTL:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
     elif HAS_MSVCRT:
-        # Windows locking with msvcrt
-        while True:
+        # Windows locking with msvcrt - with timeout to prevent infinite loop
+        max_retries = 50  # 5 seconds max
+        for attempt in range(max_retries):
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except IOError:
+                if attempt == max_retries - 1:
+                    raise TimeoutError("Failed to acquire file lock after 5 seconds")
                 time.sleep(0.1)
     # If no locking available, proceed without locking (less robust but functional)
 
@@ -125,9 +128,12 @@ class HeadlessPMMCPServer:
         self.token_tracker = TokenTracker()
         self._api_process: Optional[subprocess.Popen] = None
         self._api_server_pid: Optional[int] = None  # Track actual server process PID
+        self._api_server_start_time: Optional[float] = None  # Track process creation time
         self._we_started_api = False  # Track whether WE started the API process
         self._client_id = f"mcp_{os.getpid()}_{int(time.time())}"  # Unique client identifier
         self._shutdown_requested = asyncio.Event()
+        self._startup_attempts = 0  # Track API startup attempts for fork bomb protection
+        self._last_startup_attempt = 0  # Timestamp of last startup attempt
 
         # Register handlers
         self._register_handlers()
@@ -182,6 +188,14 @@ class HeadlessPMMCPServer:
             try:
                 server_process = psutil.Process(cleanup_pid)
                 
+                # Validate process identity using creation time to prevent PID reuse attacks
+                current_create_time = server_process.create_time()
+                if self._api_server_start_time and abs(current_create_time - self._api_server_start_time) > 1.0:
+                    logger.warning(f"Process {cleanup_pid} creation time mismatch - possible PID reuse! "
+                                 f"Expected: {self._api_server_start_time}, Found: {current_create_time}")
+                    logger.warning("Skipping termination to prevent killing wrong process")
+                    return
+                
                 # Verify this is still a server process before terminating
                 cmdline = server_process.cmdline()
                 if not any('uvicorn' in str(arg) or 'src.main' in str(arg) for arg in cmdline):
@@ -214,14 +228,16 @@ class HeadlessPMMCPServer:
         finally:
             # Clear the references and cleanup flag
             self._api_server_pid = None
+            self._api_server_start_time = None
             self._we_started_api = False
             self._cleanup_in_progress = False
 
     async def ensure_api_available(self) -> bool:
-        """Ensure HeadlessPM API is available using connection-first pattern."""
+        """Ensure HeadlessPM API is available using connection-first pattern with fork bomb protection."""
         # Extract host and port from base_url
         parsed = urllib.parse.urlparse(self.base_url)
         port = parsed.port or 6969
+
 
         # Register this MCP client for coordination
         should_start_api = self._register_mcp_client()
@@ -235,9 +251,10 @@ class HeadlessPMMCPServer:
                 self._we_started_api = False  # We connected to existing API
                 # Discover the API server PID for proper cleanup coordination
                 api_port = int(os.environ.get("SERVICE_PORT", "6969"))
-                self._api_server_pid = self._find_api_server_pid(api_port)
-                if self._api_server_pid:
-                    logger.info(f"Discovered existing API server PID: {self._api_server_pid}")
+                pid_info = self._find_api_server_pid(api_port)
+                if pid_info:
+                    self._api_server_pid, self._api_server_start_time = pid_info
+                    logger.info(f"Discovered existing API server PID: {self._api_server_pid} (created: {self._api_server_start_time})")
                     # Mark that we discovered an existing API (enables handoff cleanup)
                     self._discovered_existing_api = True
                 else:
@@ -259,9 +276,10 @@ class HeadlessPMMCPServer:
                         self._we_started_api = False
                         # Discover the API server PID for proper cleanup coordination
                         api_port = int(os.environ.get("SERVICE_PORT", "6969"))
-                        self._api_server_pid = self._find_api_server_pid(api_port)
-                        if self._api_server_pid:
-                            logger.info(f"Discovered API server PID from another client: {self._api_server_pid}")
+                        pid_info = self._find_api_server_pid(api_port)
+                        if pid_info:
+                            self._api_server_pid, self._api_server_start_time = pid_info
+                            logger.info(f"Discovered API server PID from another client: {self._api_server_pid} (created: {self._api_server_start_time})")
                             # Mark that we discovered an existing API (enables handoff cleanup)
                             self._discovered_existing_api = True
                         else:
@@ -276,8 +294,23 @@ class HeadlessPMMCPServer:
             logger.info("Auto-start disabled via HEADLESS_PM_NO_AUTOSTART")
             return False
 
-        # Step 2: Try to start API process
+        # Step 2: Try to start API process with fork bomb protection
         logger.info("Attempting to start HeadlessPM API...")
+        
+        # FORK BOMB PROTECTION: Rate limit startup attempts
+        now = time.time()
+        if now - self._last_startup_attempt < 5.0:  # 5 second cooldown
+            self._startup_attempts += 1
+            if self._startup_attempts > 3:  # Max 3 rapid attempts
+                logger.error(f"🚨 FORK BOMB PROTECTION: Too many rapid startup attempts ({self._startup_attempts})")
+                logger.error("   Preventing potential fork bomb - waiting 30 seconds...")
+                await asyncio.sleep(30)  # Cooldown period
+                self._startup_attempts = 0
+        else:
+            self._startup_attempts = 1  # Reset counter after cooldown
+        
+        self._last_startup_attempt = now
+        
         try:
             # Find headless-pm executable in common locations
             headless_pm_cmd = self._find_headless_pm_command()
@@ -287,18 +320,25 @@ class HeadlessPMMCPServer:
                 logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
                 return False
 
-            logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd}")
+            logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd} (attempt {self._startup_attempts})")
 
             # Determine working directory with better user context preservation
             working_dir = self._determine_working_directory(headless_pm_cmd)
 
-            # Start API process
+            # Start API process with fork bomb prevention
+            fork_bomb_env = {
+                **os.environ, 
+                "SERVICE_PORT": str(port),
+                "HEADLESS_PM_FROM_MCP": "1",  # Prevent MCP server startup in spawned process
+                "MCP_PORT": "",               # Explicitly disable MCP server startup
+            }
+            
             self._api_process = subprocess.Popen(
                 headless_pm_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=working_dir,
-                env={**os.environ, "SERVICE_PORT": str(port)}
+                env=fork_bomb_env
             )
 
             # Step 3: Wait for API to become available (with retries)
@@ -312,9 +352,10 @@ class HeadlessPMMCPServer:
                         self._we_started_api = True
                         # Discover the actual server process PID for proper cleanup
                         port = int(os.environ.get("SERVICE_PORT", "6969"))
-                        self._api_server_pid = self._find_api_server_pid(port)
-                        if self._api_server_pid:
-                            logger.info(f"Discovered API server PID: {self._api_server_pid}")
+                        pid_info = self._find_api_server_pid(port)
+                        if pid_info:
+                            self._api_server_pid, self._api_server_start_time = pid_info
+                            logger.info(f"Discovered API server PID: {self._api_server_pid} (created: {self._api_server_start_time})")
                         else:
                             logger.warning("Could not discover API server PID - cleanup may not work properly")
                         return True
@@ -385,7 +426,7 @@ class HeadlessPMMCPServer:
         return None  # None means use current directory
 
     def _find_headless_pm_command(self) -> Optional[List[str]]:
-        """Find headless-pm command using smart discovery."""
+        """Find headless-pm command using smart discovery with fork bomb protection."""
         # Environment override - highest priority
         if "HEADLESS_PM_COMMAND" in os.environ:
             return os.environ["HEADLESS_PM_COMMAND"].split()
@@ -393,25 +434,40 @@ class HeadlessPMMCPServer:
         current_python = self._get_current_python()
 
         # Build candidate commands in priority order
-        candidates = [
-            # 1. Global installations
-            ["headless-pm"],
-            ["headless-pm-mcp"],
+        # FORK BOMB PROTECTION: When called from MCP context, prioritize API-only commands
+        candidates = []
+        
+        # If we're in an MCP context, prioritize API-only commands to prevent recursion
+        if self._is_mcp_spawned_context():
+            candidates.extend([
+                # API-only commands first when in MCP context
+                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "6969"],
+                [current_python, "-m", "src.main"],
+                ["python3", "-m", "src.main"],
+                ["uv", "run", "api-only"],
+                ["uv", "run", "--", "python", "-m", "src.main"],
+            ])
+        else:
+            # Normal discovery order for non-MCP contexts
+            candidates.extend([
+                # 1. Global installations (safe in non-MCP context)
+                ["headless-pm"],
+                ["headless-pm-mcp"],
 
-            # 2. Same Python interpreter (consistency)
-            [current_python, "-m", "headless_pm"],
+                # 2. Same Python interpreter (consistency)
+                [current_python, "-m", "headless_pm"],
 
-            # 3. UV commands
-            ["uv", "run", "headless-pm"],
-            ["uv", "run", "start"],
+                # 3. UV commands
+                ["uv", "run", "headless-pm"],
+                ["uv", "run", "start"],
 
-            # 4. Virtual environments
-            *self._get_venv_commands(),
+                # 4. Virtual environments
+                *self._get_venv_commands(),
 
-            # 5. Direct Python execution
-            ["python3", "-m", "headless_pm"],
-            ["python", "-m", "headless_pm"],
-        ]
+                # 5. Direct Python execution
+                ["python3", "-m", "headless_pm"],
+                ["python", "-m", "headless_pm"],
+            ])
 
         # Add project-specific commands if project found
         project_dir = self._find_project_directory()
@@ -433,8 +489,8 @@ class HeadlessPMMCPServer:
         logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
         return None
 
-    def _find_api_server_pid(self, port: int) -> Optional[int]:
-        """Find the PID of the actual API server process listening on the given port."""
+    def _find_api_server_pid(self, port: int) -> Optional[tuple[int, float]]:
+        """Find the PID and creation time of the actual API server process listening on the given port."""
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
@@ -448,8 +504,10 @@ class HeadlessPMMCPServer:
                             # Additional validation: check if it's likely a web server
                             cmdline = proc.info.get('cmdline', [])
                             if cmdline and any('uvicorn' in str(arg) or 'src.main' in str(arg) for arg in cmdline):
-                                logger.info(f"Found API server process: PID={proc.info['pid']} cmdline={cmdline}")
-                                return proc.info['pid']
+                                # Get process creation time for PID reuse protection
+                                create_time = proc.create_time()
+                                logger.info(f"Found API server process: PID={proc.info['pid']} created={create_time} cmdline={cmdline}")
+                                return (proc.info['pid'], create_time)
                             
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
@@ -573,6 +631,7 @@ class HeadlessPMMCPServer:
             logger.warning(f"Could not unregister MCP client: {e}")
             return False  # Default to not cleaning up if coordination fails
 
+
     def _get_venv_commands(self) -> List[List[str]]:
         """Get virtual environment commands to try."""
         commands = []
@@ -588,6 +647,63 @@ class HeadlessPMMCPServer:
                 if venv_path.exists():
                     commands.append([str(venv_path)])
         return commands
+
+    def _get_venv_api_commands(self) -> List[List[str]]:
+        """Get virtual environment API-only commands to prevent fork bombs."""
+        commands = []
+        project_dir = self._find_project_directory()
+        # Search in CWD first, then project_dir if it's different
+        search_dirs = [Path.cwd()]
+        if project_dir and project_dir != Path.cwd():
+            search_dirs.append(project_dir)
+
+        for venv_name in [".venv", "venv", "claude_venv"]:
+            for base_dir in search_dirs:
+                venv_python = base_dir / venv_name / "bin" / "python"
+                if venv_python.exists():
+                    # Use Python API commands only - never spawn full headless-pm
+                    commands.extend([
+                        [str(venv_python), "-m", "src.main"],
+                        [str(venv_python), "-m", "headless_pm"]
+                    ])
+        return commands
+
+    def _is_mcp_spawned_context(self) -> bool:
+        """Detect if we're running in an MCP-spawned context to prevent fork bombs."""
+        # Check for MCP-specific environment markers
+        mcp_indicators = [
+            "HEADLESS_PM_FROM_MCP",  # Explicit marker we'll set
+            "MCP_CLIENT_ID",         # MCP client identifier
+            "_MCP_SERVER_RUNNING",   # Internal MCP server marker
+        ]
+        
+        # Check if any MCP indicators are present
+        for indicator in mcp_indicators:
+            if os.environ.get(indicator):
+                logger.debug(f"Detected MCP context via {indicator}")
+                return True
+        
+        # Check process ancestry for MCP server processes
+        try:
+            current_process = psutil.Process()
+            parent = current_process.parent()
+            
+            # Check up to 3 levels of parent processes
+            for level in range(3):
+                if parent is None:
+                    break
+                    
+                cmdline = parent.cmdline()
+                if cmdline and any('mcp' in str(arg).lower() for arg in cmdline):
+                    logger.debug(f"Detected MCP context via parent process: {cmdline}")
+                    return True
+                    
+                parent = parent.parent()
+                
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+            
+        return False
 
     def _test_command(self, cmd: List[str], working_dir: Optional[Path]) -> bool:
         """Test if a command is executable and working."""

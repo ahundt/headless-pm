@@ -256,18 +256,18 @@ The web dashboard provides a real-time view of your project:
 
 ## 🐍 Python Client Helper
 
-The `headless_pm_client.py` provides a complete command-line interface to the API:
+The `agents/client/headless_pm_client.py` provides a complete command-line interface to the API:
 
 ```bash
 # Basic usage
-./headless_pm_client.py --help
+./agents/client/headless_pm_client.py --help
 
 # Example commands
-./headless_pm_client.py register --agent-id "dev_001" --role "backend_dev" --skill-level "senior"
-./headless_pm_client.py epics create --name "User Authentication" --description "Implement auth system"
-./headless_pm_client.py tasks next
-./headless_pm_client.py tasks lock --task-id 123
-./headless_pm_client.py documents create --content "Completed auth module @architect please review"
+./agents/client/headless_pm_client.py register --agent-id "dev_001" --role "backend_dev" --skill-level "senior"
+./agents/client/headless_pm_client.py epics create --name "User Authentication" --description "Implement auth system"
+./agents/client/headless_pm_client.py tasks next
+./agents/client/headless_pm_client.py tasks lock --task-id 123
+./agents/client/headless_pm_client.py documents create --content "Completed auth module @architect please review"
 ```
 
 Features:
@@ -330,6 +330,7 @@ claude  # Connects to existing API
 - `HEADLESS_PM_NO_AUTOSTART`: Skip auto-start, connection-only mode
 - `HEADLESS_PM_COMMAND`: Override command discovery  
 - `HEADLESS_PM_DIR`: Set working directory for API processes
+- `HEADLESS_PM_URL`: API base URL (overrides default, e.g., http://localhost:6969)
 - `SERVICE_PORT`: API port (default: 6969)
 
 ### Using MCP Commands
@@ -434,7 +435,9 @@ headless-pm/
 ├── examples/             # Sample workflows and demos
 ├── setup/               # Installation and setup scripts
 ├── docs/               # Project documentation
-└── headless_pm_client.py  # Python CLI client
+└── agents/
+    └── client/
+        └── headless_pm_client.py  # Python CLI client
 ```
 
 ## 🤖 Agent Roles

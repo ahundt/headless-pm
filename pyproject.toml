@@ -115,6 +115,42 @@ dev-dependencies = [
     "pytest-asyncio>=0.23.0",
 ]
 
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (may require external services)",
+    "slow: marks tests as slow running",
+    "unit: marks tests as unit tests"
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:src.mcp.token_tracker",
+    "ignore::DeprecationWarning:src.mcp.server"
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "tests/*",
+    "setup/*", 
+    "migrations/*",
+    "dashboard/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError"
+]
+
 # UV workspace configuration for multi-component architecture
 [tool.uv.workspace]
 members = [
