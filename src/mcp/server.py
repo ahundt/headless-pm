@@ -41,7 +41,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
-import psutil
+
+# Optional psutil import for process management (graceful fallback if missing)
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    logger.warning("psutil not available - process discovery and cleanup features disabled")
+    HAS_PSUTIL = False
+    # Create minimal psutil mock for graceful degradation
+    class psutil:
+        @staticmethod
+        def process_iter(*args):
+            return []
+        @staticmethod 
+        def pid_exists(pid):
+            return False
+        class Process:
+            def __init__(self, pid=None): pass
+            def create_time(self): return time.time()
+            def cmdline(self): return []
 
 # Cross-platform file locking
 try:
@@ -87,9 +106,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
 logger = logging.getLogger("headless-pm-mcp")
 
-# Global fork bomb protection - shared across all instances
-_GLOBAL_STARTUP_ATTEMPTS = {}  # {port: (count, last_attempt_time)}
-_GLOBAL_STARTUP_LOCK = None
+# Note: Rate limiting now uses file-based coordination only (no global state)
 
 
 def _lock_file(f):
@@ -121,8 +138,12 @@ def _unlock_file(f):
 class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
-    def __init__(self, base_url: str = "http://localhost:6969"):
-        # Prioritize env var, then constructor arg (maintains backward compatibility)
+    def __init__(self, base_url: str = None):
+        # Construct base_url respecting SERVICE_PORT for consistency
+        if base_url is None:
+            service_port = os.getenv('SERVICE_PORT', '6969')
+            base_url = f"http://localhost:{service_port}"
+        # Prioritize HEADLESS_PM_URL env var, then constructed/provided base_url
         self.base_url = (os.getenv('HEADLESS_PM_URL') or base_url).rstrip('/')
         self.server = Server("headless-pm")
         self.client = httpx.AsyncClient(timeout=30.0)
@@ -136,8 +157,6 @@ class HeadlessPMMCPServer:
         self._we_started_api = False  # Track whether WE started the API process
         self._client_id = f"mcp_{os.getpid()}_{int(time.time())}"  # Unique client identifier
         self._shutdown_requested = asyncio.Event()
-        self._startup_attempts = 0  # Track API startup attempts for fork bomb protection
-        self._last_startup_attempt = 0  # Timestamp of last startup attempt
 
         # Register handlers
         self._register_handlers()
@@ -301,26 +320,10 @@ class HeadlessPMMCPServer:
         # Step 2: Try to start API process with fork bomb protection
         logger.info("Attempting to start HeadlessPM API...")
         
-        # FORK BOMB PROTECTION: Global rate limit startup attempts per port
-        now = time.time()
-        global _GLOBAL_STARTUP_ATTEMPTS
-        
-        port_key = str(port)
-        if port_key in _GLOBAL_STARTUP_ATTEMPTS:
-            count, last_attempt = _GLOBAL_STARTUP_ATTEMPTS[port_key]
-            if now - last_attempt < 5.0:  # 5 second cooldown
-                count += 1
-                if count > 3:  # Max 3 rapid attempts globally
-                    logger.error(f"🚨 FORK BOMB PROTECTION: Too many rapid startup attempts for port {port} ({count})")
-                    logger.error("   Preventing potential fork bomb - waiting 30 seconds...")
-                    await asyncio.sleep(30)  # Cooldown period
-                    _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # Reset after cooldown
-                else:
-                    _GLOBAL_STARTUP_ATTEMPTS[port_key] = (count, now)
-            else:
-                _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # Reset after cooldown
-        else:
-            _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # First attempt
+        # FORK BOMB PROTECTION: Rate limit using coordination file (thread/process safe)
+        if not await self._check_startup_rate_limit(port):
+            logger.error("🚨 FORK BOMB PROTECTION: Rate limit exceeded - preventing startup")
+            return False
         
         try:
             # Find headless-pm executable in common locations
@@ -331,7 +334,7 @@ class HeadlessPMMCPServer:
                 logger.error("   Override: HEADLESS_PM_COMMAND='your command'")
                 return False
 
-            logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd} (attempt {self._startup_attempts})")
+            logger.info(f"Starting HeadlessPM API with: {headless_pm_cmd}")
 
             # Determine working directory with better user context preservation
             working_dir = self._determine_working_directory(headless_pm_cmd)
@@ -343,7 +346,7 @@ class HeadlessPMMCPServer:
                 "HEADLESS_PM_FROM_MCP": "1",  # Prevent MCP server startup in spawned process
             }
             # Only clear MCP_PORT if it would cause recursive startup
-            if "headless-pm" in " ".join(headless_pm_cmd):
+            if headless_pm_cmd and "headless-pm" in " ".join(str(arg) for arg in headless_pm_cmd):
                 fork_bomb_env["MCP_PORT"] = ""  # Disable MCP server only for recursive commands
             
             self._api_process = subprocess.Popen(
@@ -452,9 +455,10 @@ class HeadlessPMMCPServer:
         
         # If we're in an MCP context, prioritize API-only commands to prevent recursion
         if self._is_mcp_spawned_context():
+            service_port = os.environ.get("SERVICE_PORT", "6969")
             candidates.extend([
-                # API-only commands first when in MCP context
-                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "6969"],
+                # API-only commands first when in MCP context (use dynamic port)
+                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", service_port],
                 [current_python, "-m", "src.main"],
                 ["python3", "-m", "src.main"],
                 ["uv", "run", "api-only"],
@@ -485,11 +489,12 @@ class HeadlessPMMCPServer:
         # Add project-specific commands if project found
         project_dir = self._find_project_directory()
         if project_dir:
+            service_port = os.environ.get("SERVICE_PORT", "6969")
             candidates.extend([
                 [current_python, "-m", "src.main"],
                 ["python3", "-m", "src.main"],
                 ["uv", "run", "--", "python", "-m", "src.main"],
-                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "6969"],
+                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", service_port],
             ])
 
         # Test candidates
@@ -579,7 +584,9 @@ class HeadlessPMMCPServer:
                 data['clients'] = active_clients
                 data['api_pid'] = data.get('api_pid')  # Preserve existing API PID
                 
-                json.dump(data, f, indent=2)
+                temp_data = json.dumps(data, indent=2)
+                f.write(temp_data)
+                f.flush()
                 _unlock_file(f)
                 
                 # Return True if this is the first client (should start API)
@@ -624,7 +631,9 @@ class HeadlessPMMCPServer:
                 
                 f.seek(0)
                 f.truncate()
-                json.dump(data, f, indent=2)
+                temp_data = json.dumps(data, indent=2)
+                f.write(temp_data)
+                f.flush()
                 _unlock_file(f)
                 
                 # Return True if this was the last client (should cleanup API)
@@ -644,6 +653,57 @@ class HeadlessPMMCPServer:
             logger.warning(f"Could not unregister MCP client: {e}")
             return False  # Default to not cleaning up if coordination fails
 
+    async def _check_startup_rate_limit(self, port: int) -> bool:
+        """Check startup rate limit using simple file-based coordination (deadlock-safe)."""
+        coordination_file = self._get_mcp_coordination_file()
+        now = time.time()
+        
+        try:
+            # Simple file-based rate limiting without nested locks
+            with open(coordination_file, 'a+') as f:
+                _lock_file(f)
+                f.seek(0)
+                
+                try:
+                    data = json.load(f) if f.read().strip() else {}
+                except json.JSONDecodeError:
+                    data = {}
+                
+                # Check rate limiting data
+                port_key = str(port)
+                rate_data = data.get('rate_limits', {}).get(port_key, {'attempts': []})
+                
+                # Clean up old attempts (older than 5 minutes)
+                cutoff = now - 300
+                rate_data['attempts'] = [attempt for attempt in rate_data['attempts'] if attempt > cutoff]
+                
+                # Check if rate limit exceeded
+                recent_attempts = [attempt for attempt in rate_data['attempts'] if now - attempt < 5.0]
+                if len(recent_attempts) >= 3:
+                    logger.warning(f"Rate limit exceeded for port {port}: {len(recent_attempts)} attempts in 5 seconds")
+                    return False
+                
+                # Record this attempt
+                rate_data['attempts'].append(now)
+                
+                # Update data
+                if 'rate_limits' not in data:
+                    data['rate_limits'] = {}
+                data['rate_limits'][port_key] = rate_data
+                
+                # Atomic write back to prevent corruption
+                temp_data = json.dumps(data, indent=2)
+                f.seek(0)
+                f.truncate()
+                f.write(temp_data)
+                f.flush()  # Ensure data is written to disk
+                _unlock_file(f)
+                
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Rate limit check failed: {e} - allowing startup")
+            return True  # Fail open for availability
 
     def _get_venv_commands(self) -> List[List[str]]:
         """Get virtual environment commands to try."""
@@ -1471,13 +1531,13 @@ async def main():
     import sys
     import os
 
-    # Get base URL from environment or command line args
-    base_url = os.getenv('HEADLESS_PM_URL', 'http://localhost:6969')
+    # Get base URL from command line args or let constructor handle SERVICE_PORT
+    base_url = None
     if len(sys.argv) > 1:
         base_url = sys.argv[1]
 
-    logger.info(f"Starting MCP server, connecting to API at {base_url}")
     server = HeadlessPMMCPServer(base_url)
+    logger.info(f"Starting MCP server, connecting to API at {server.base_url}")
     await server.run()
 
 
