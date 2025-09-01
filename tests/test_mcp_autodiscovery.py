@@ -530,3 +530,34 @@ class TestMCPAutoDiscovery:
                 mcp_process.terminate()
                 mcp_process.wait()
             self.ensure_no_api_running()
+
+    def test_service_port_consistency(self):
+        """Test that SERVICE_PORT environment variable is respected consistently."""
+        # Test default port
+        server_default = HeadlessPMMCPServer()
+        assert "localhost:6969" in server_default.base_url
+        
+        # Test custom SERVICE_PORT
+        with patch.dict(os.environ, {"SERVICE_PORT": "7070"}):
+            server_custom = HeadlessPMMCPServer()
+            assert "localhost:7070" in server_custom.base_url
+
+    def test_coordination_file_corruption_resilience(self):
+        """Test coordination file handles corruption gracefully."""
+        server = HeadlessPMMCPServer()
+        coordination_file = server._get_mcp_coordination_file()
+        
+        # Create corrupted coordination file
+        with open(coordination_file, "w") as f:
+            f.write("invalid json{{{")
+        
+        try:
+            # Should handle corruption gracefully
+            result = server._register_mcp_client()
+            assert isinstance(result, bool), "Should return boolean even with corrupted file"
+            
+        finally:
+            # Clean up
+            if coordination_file.exists():
+                coordination_file.unlink()
+
