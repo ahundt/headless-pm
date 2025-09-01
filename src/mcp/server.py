@@ -87,6 +87,10 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
 logger = logging.getLogger("headless-pm-mcp")
 
+# Global fork bomb protection - shared across all instances
+_GLOBAL_STARTUP_ATTEMPTS = {}  # {port: (count, last_attempt_time)}
+_GLOBAL_STARTUP_LOCK = None
+
 
 def _lock_file(f):
     """Cross-platform file locking."""
@@ -297,19 +301,26 @@ class HeadlessPMMCPServer:
         # Step 2: Try to start API process with fork bomb protection
         logger.info("Attempting to start HeadlessPM API...")
         
-        # FORK BOMB PROTECTION: Rate limit startup attempts
+        # FORK BOMB PROTECTION: Global rate limit startup attempts per port
         now = time.time()
-        if now - self._last_startup_attempt < 5.0:  # 5 second cooldown
-            self._startup_attempts += 1
-            if self._startup_attempts > 3:  # Max 3 rapid attempts
-                logger.error(f"🚨 FORK BOMB PROTECTION: Too many rapid startup attempts ({self._startup_attempts})")
-                logger.error("   Preventing potential fork bomb - waiting 30 seconds...")
-                await asyncio.sleep(30)  # Cooldown period
-                self._startup_attempts = 0
-        else:
-            self._startup_attempts = 1  # Reset counter after cooldown
+        global _GLOBAL_STARTUP_ATTEMPTS
         
-        self._last_startup_attempt = now
+        port_key = str(port)
+        if port_key in _GLOBAL_STARTUP_ATTEMPTS:
+            count, last_attempt = _GLOBAL_STARTUP_ATTEMPTS[port_key]
+            if now - last_attempt < 5.0:  # 5 second cooldown
+                count += 1
+                if count > 3:  # Max 3 rapid attempts globally
+                    logger.error(f"🚨 FORK BOMB PROTECTION: Too many rapid startup attempts for port {port} ({count})")
+                    logger.error("   Preventing potential fork bomb - waiting 30 seconds...")
+                    await asyncio.sleep(30)  # Cooldown period
+                    _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # Reset after cooldown
+                else:
+                    _GLOBAL_STARTUP_ATTEMPTS[port_key] = (count, now)
+            else:
+                _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # Reset after cooldown
+        else:
+            _GLOBAL_STARTUP_ATTEMPTS[port_key] = (1, now)  # First attempt
         
         try:
             # Find headless-pm executable in common locations
@@ -330,8 +341,10 @@ class HeadlessPMMCPServer:
                 **os.environ, 
                 "SERVICE_PORT": str(port),
                 "HEADLESS_PM_FROM_MCP": "1",  # Prevent MCP server startup in spawned process
-                "MCP_PORT": "",               # Explicitly disable MCP server startup
             }
+            # Only clear MCP_PORT if it would cause recursive startup
+            if "headless-pm" in " ".join(headless_pm_cmd):
+                fork_bomb_env["MCP_PORT"] = ""  # Disable MCP server only for recursive commands
             
             self._api_process = subprocess.Popen(
                 headless_pm_cmd,
@@ -694,7 +707,10 @@ class HeadlessPMMCPServer:
                     break
                     
                 cmdline = parent.cmdline()
-                if cmdline and any('mcp' in str(arg).lower() for arg in cmdline):
+                # More specific MCP detection - look for actual MCP-related patterns
+                if cmdline and any(pattern in str(cmdline).lower() for pattern in [
+                    'src.mcp', 'mcp/server', 'mcp_server', 'headless-pm-mcp', 'mcp.server'
+                ]):
                     logger.debug(f"Detected MCP context via parent process: {cmdline}")
                     return True
                     
@@ -702,6 +718,10 @@ class HeadlessPMMCPServer:
                 
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+        except Exception as e:
+            # If context detection fails, err on side of caution and assume MCP context
+            logger.warning(f"Error detecting MCP context - assuming MCP context for safety: {e}")
+            return True  # Safe default: assume MCP context to prevent fork bomb
             
         return False
 
@@ -714,13 +734,17 @@ class HeadlessPMMCPServer:
 
             # Use --help for general compatibility
             test_args = cmd + ["--help"]
+            
+            # Use minimal test environment (don't include fork bomb protection vars in testing)
+            test_env = {k: v for k, v in os.environ.items() 
+                       if not k.startswith('HEADLESS_PM_FROM_MCP')}
 
             result = subprocess.run(
                 test_args,
                 capture_output=True,
                 timeout=3,
                 cwd=working_dir or Path.cwd(),
-                env=os.environ
+                env=test_env
             )
             return result.returncode == 0
         except Exception:
