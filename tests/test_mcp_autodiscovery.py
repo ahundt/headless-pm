@@ -22,6 +22,7 @@ from sqlmodel import Session, SQLModel, create_engine
 # Import app and dependencies
 from src.main import app
 from src.api.dependencies import get_session
+from src.mcp.server import HeadlessPMMCPServer
 
 
 @pytest.fixture
