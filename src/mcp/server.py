@@ -156,7 +156,8 @@ class HeadlessPMMCPServer:
         self._api_server_pid: Optional[int] = None  # Track actual server process PID
         self._api_server_start_time: Optional[float] = None  # Track process creation time
         self._we_started_api = False  # Track whether WE started the API process
-        self._client_id = f"mcp_{os.getpid()}_{int(time.time())}"  # Unique client identifier
+        import random
+        self._client_id = f"mcp_{os.getpid()}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"  # More unique client identifier
         self._shutdown_requested = asyncio.Event()
 
         # Register handlers
