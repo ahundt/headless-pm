@@ -74,7 +74,9 @@ def client(session, engine):
 @pytest.fixture
 def api_headers():
     """API headers with authentication"""
-    return {"X-API-Key": "fi12jsm1212"}
+    # Use same API key that's configured in the test environment
+    api_key = os.getenv("API_KEY", "XXXXXX")
+    return {"X-API-Key": api_key}
 
 
 class TestAgentRoutes:

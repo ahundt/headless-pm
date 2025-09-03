@@ -7,11 +7,12 @@ import subprocess
 import json
 import time
 import os
+import pytest
 import requests
 from datetime import datetime
 
-# API configuration
-API_KEY = "fi12jsm1212"
+# API configuration  
+API_KEY = os.getenv("API_KEY", "XXXXXX")
 BASE_URL = "http://localhost:6969/api/v1"
 
 def api_request(method, endpoint, data=None, params=None):
@@ -60,6 +61,11 @@ def lock_task_api(task_id, agent_id):
 
 def test_backend_dev_scenarios():
     """Test different backend_dev task assignment scenarios"""
+    
+    # Use TestClient for reliable testing without external dependencies
+    from fastapi.testclient import TestClient
+    from src.main import app
+    test_client = TestClient(app)
     
     print("=== Backend Developer Task Assignment Test ===\n")
     

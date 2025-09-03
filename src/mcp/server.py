@@ -139,11 +139,10 @@ class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
     def __init__(self, base_url: str = None):
-        # Construct base_url using same port discovery logic as main API for consistency
+        # Construct base_url - defer port discovery to avoid subprocess issues
         if base_url is None:
-            # Import here to avoid circular imports
-            from src.main import get_port
-            service_port = get_port("SERVICE_PORT", 6969, quiet=True)  # Quiet for library usage
+            # Simple port resolution without auto-discovery for MCP server
+            service_port = os.getenv('SERVICE_PORT', '6969')
             base_url = f"http://localhost:{service_port}"
         # Prioritize HEADLESS_PM_URL env var, then constructed/provided base_url
         self.base_url = (os.getenv('HEADLESS_PM_URL') or base_url).rstrip('/')
@@ -457,9 +456,13 @@ class HeadlessPMMCPServer:
         
         # If we're in an MCP context, prioritize API-only commands to prevent recursion
         if self._is_mcp_spawned_context():
-            # Use consistent port discovery for uvicorn commands
-            from src.main import get_port
-            service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+            # Use port discovery for uvicorn commands but handle import carefully
+            try:
+                from src.main import get_port
+                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+            except ImportError:
+                # Fallback if import fails (e.g., in test subprocess)
+                service_port = os.environ.get("SERVICE_PORT", "6969")
             candidates.extend([
                 # API-only commands first when in MCP context (use dynamic port)
                 ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", service_port],
@@ -493,9 +496,12 @@ class HeadlessPMMCPServer:
         # Add project-specific commands if project found
         project_dir = self._find_project_directory()
         if project_dir:
-            # Use consistent port discovery for project-specific uvicorn commands
-            from src.main import get_port
-            service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+            # Use port discovery for project uvicorn commands with fallback
+            try:
+                from src.main import get_port
+                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+            except ImportError:
+                service_port = os.environ.get("SERVICE_PORT", "6969")
             candidates.extend([
                 [current_python, "-m", "src.main"],
                 ["python3", "-m", "src.main"],
@@ -563,7 +569,12 @@ class HeadlessPMMCPServer:
                 f.seek(0)
                 
                 try:
-                    data = json.load(f) if f.read().strip() else {}
+                    content = f.read().strip()
+                    if content:
+                        f.seek(0)  # Reset position for json.load
+                        data = json.load(f)
+                    else:
+                        data = {}
                 except json.JSONDecodeError:
                     data = {}
                 
@@ -671,7 +682,12 @@ class HeadlessPMMCPServer:
                 f.seek(0)
                 
                 try:
-                    data = json.load(f) if f.read().strip() else {}
+                    content = f.read().strip()
+                    if content:
+                        f.seek(0)  # Reset position for json.load
+                        data = json.load(f)
+                    else:
+                        data = {}
                 except json.JSONDecodeError:
                     data = {}
                 
