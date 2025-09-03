@@ -139,9 +139,11 @@ class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
     def __init__(self, base_url: str = None):
-        # Construct base_url respecting SERVICE_PORT for consistency
+        # Construct base_url using same port discovery logic as main API for consistency
         if base_url is None:
-            service_port = os.getenv('SERVICE_PORT', '6969')
+            # Import here to avoid circular imports
+            from src.main import get_port
+            service_port = get_port("SERVICE_PORT", 6969, quiet=True)  # Quiet for library usage
             base_url = f"http://localhost:{service_port}"
         # Prioritize HEADLESS_PM_URL env var, then constructed/provided base_url
         self.base_url = (os.getenv('HEADLESS_PM_URL') or base_url).rstrip('/')
@@ -455,7 +457,9 @@ class HeadlessPMMCPServer:
         
         # If we're in an MCP context, prioritize API-only commands to prevent recursion
         if self._is_mcp_spawned_context():
-            service_port = os.environ.get("SERVICE_PORT", "6969")
+            # Use consistent port discovery for uvicorn commands
+            from src.main import get_port
+            service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
             candidates.extend([
                 # API-only commands first when in MCP context (use dynamic port)
                 ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", service_port],
@@ -489,7 +493,9 @@ class HeadlessPMMCPServer:
         # Add project-specific commands if project found
         project_dir = self._find_project_directory()
         if project_dir:
-            service_port = os.environ.get("SERVICE_PORT", "6969")
+            # Use consistent port discovery for project-specific uvicorn commands
+            from src.main import get_port
+            service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
             candidates.extend([
                 [current_python, "-m", "src.main"],
                 ["python3", "-m", "src.main"],

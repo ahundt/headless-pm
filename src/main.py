@@ -37,14 +37,80 @@ def find_available_port(start_port, max_attempts=50):
     # Fallback to original port if all attempts fail
     return start_port
 
-def get_safe_port(env_var, default_port):
-    """Get port with environment override or safe auto-discovery"""
-    if env_var in os.environ:
-        # Respect explicit environment setting
-        return int(os.environ[env_var])
-    else:
-        # Use auto-discovery for multi-project safety
-        return find_available_port(default_port)
+def get_port(env_var=None, default_port=None, auto_discover=True, service_name=None, quiet=False):
+    """Universal port allocation with configurable behavior.
+    
+    Args:
+        env_var: Environment variable to check (e.g., 'SERVICE_PORT') 
+        default_port: Default port to try (required if env_var not set)
+        auto_discover: If True, find alternative port when default/env port occupied
+        service_name: Service name for user messages (auto-derived if not provided)
+        quiet: If True, suppress user feedback messages
+        
+    Returns:
+        int: Available port number
+        
+    Usage patterns:
+        # Basic auto-discovery (most common)
+        port = get_port("SERVICE_PORT", 6969)
+        
+        # Strict mode (fail if occupied)  
+        port = get_port("SERVICE_PORT", 6969, auto_discover=False)
+        
+        # Just find any available port
+        port = get_port(default_port=8000)
+        
+        # Quiet mode for internal use
+        port = get_port("MCP_PORT", 6968, quiet=True)
+    """
+    if not env_var and default_port is None:
+        raise ValueError("Must provide either env_var or default_port")
+    
+    service_display = service_name or (env_var.replace('_PORT', '').lower() if env_var else f"port-{default_port}")
+    
+    # 1. Environment variable takes highest priority
+    if env_var and env_var in os.environ:
+        requested_port = int(os.environ[env_var])
+        if is_port_available(requested_port):
+            return requested_port
+        elif auto_discover:
+            if not quiet:
+                print(f"⚠️  {service_display} port {requested_port} from {env_var} is occupied")
+            discovered_port = find_available_port(requested_port)
+            if not quiet:
+                print(f"✅ Using {service_display} port {discovered_port}")
+            return discovered_port
+        else:
+            # Strict mode - return requested port even if occupied (let caller handle)
+            return requested_port
+    
+    # 2. Try default port if provided
+    if default_port is not None:
+        if is_port_available(default_port):
+            return default_port
+        elif auto_discover:
+            if not quiet:
+                print(f"ℹ️  Default {service_display} port {default_port} occupied, discovering alternative...")
+            discovered_port = find_available_port(default_port)
+            if not quiet:
+                print(f"✅ Using {service_display} port {discovered_port}")
+            return discovered_port
+        else:
+            # Strict mode - return default even if occupied
+            return default_port
+    
+    # 3. Should not reach here given input validation
+    raise ValueError("No port determination method available")
+
+def is_port_available(port):
+    """Check if a specific port is available for binding."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('localhost', port))
+            return True
+    except OSError:
+        return False
 
 def cleanup_dashboard():
     """Clean up dashboard process on exit"""
@@ -91,8 +157,8 @@ def start_dashboard_if_available():
     """Start dashboard with lightweight monitoring"""
     global dashboard_process
     
-    # Use safe port discovery if DASHBOARD_PORT not explicitly set
-    dashboard_port = get_safe_port("DASHBOARD_PORT", 3001)
+    # Use auto-discovery for dashboard port  
+    dashboard_port = get_port("DASHBOARD_PORT", 3001)
     auto_start = os.getenv("HEADLESS_PM_AUTO_DASHBOARD", "true").lower() == "true"
     
     if not auto_start:
@@ -308,9 +374,9 @@ def main():
     # Start dashboard if available
     dashboard_process = start_dashboard_if_available()
     
-    # Get safe ports with auto-discovery for multi-project support
-    port = get_safe_port("SERVICE_PORT", 6969)
-    dashboard_port = get_safe_port("DASHBOARD_PORT", 3001)
+    # Get ports with auto-discovery
+    port = get_port("SERVICE_PORT", 6969)
+    dashboard_port = get_port("DASHBOARD_PORT", 3001)
     
     # Update environment for dashboard process
     os.environ["DASHBOARD_PORT"] = str(dashboard_port)
