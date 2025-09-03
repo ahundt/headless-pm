@@ -416,7 +416,7 @@ class TestMCPAutoDiscovery:
         
         # Start first MCP server (should start API)
         mcp1_process = subprocess.Popen([
-            "python", str(mcp_server_path)
+            "python", "-m", "src.mcp"
         ], 
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
@@ -438,7 +438,7 @@ class TestMCPAutoDiscovery:
             
             # Start second MCP server (should connect to existing API)
             mcp2_process = subprocess.Popen([
-                "python", str(mcp_server_path)
+                "python", "-m", "src.mcp"
             ], 
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,

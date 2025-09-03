@@ -8,64 +8,59 @@ import json
 import time
 import os
 import pytest
-import requests
 from datetime import datetime
+from fastapi.testclient import TestClient
+from src.main import app
 
 # API configuration  
 API_KEY = os.getenv("API_KEY", "XXXXXX")
-BASE_URL = "http://localhost:6969/api/v1"
-
-def api_request(method, endpoint, data=None, params=None):
-    """Make direct API request without using CLI"""
-    
-    headers = {"X-API-Key": API_KEY}
-    url = f"{BASE_URL}{endpoint}"
-    
-    if method.upper() == "GET":
-        response = requests.get(url, headers=headers, params=params)
-    elif method.upper() == "POST":
-        response = requests.post(url, json=data, headers=headers, params=params)
-    elif method.upper() == "PUT":
-        response = requests.put(url, json=data, headers=headers, params=params)
-    else:
-        raise ValueError(f"Unsupported method: {method}")
-    
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"API Error {response.status_code}: {response.text}")
-        return None
-
-def register_agent_api(agent_id, role, level):
-    """Register agent via direct API call"""
-    data = {
-        "agent_id": agent_id,
-        "role": role,
-        "level": level,
-        "connection_type": "client"
-    }
-    return api_request("POST", "/register", data=data)
-
-def get_next_task_api(role, level, simulate=True, timeout=None):
-    """Get next task via direct API call"""
-    params = {"role": role, "level": level}
-    if simulate:
-        params["simulate"] = "true"
-    if timeout is not None:
-        params["timeout"] = timeout
-    return api_request("GET", "/tasks/next", params=params)
-
-def lock_task_api(task_id, agent_id):
-    """Lock task via direct API call"""
-    return api_request("POST", f"/tasks/{task_id}/lock", params={"agent_id": agent_id})
 
 def test_backend_dev_scenarios():
     """Test different backend_dev task assignment scenarios"""
     
     # Use TestClient for reliable testing without external dependencies
-    from fastapi.testclient import TestClient
-    from src.main import app
     test_client = TestClient(app)
+    headers = {"X-API-Key": API_KEY}
+    
+    def api_request(method, endpoint, data=None, params=None):
+        """Make API request using TestClient"""
+        if method.upper() == "GET":
+            response = test_client.get(f"/api/v1{endpoint}", headers=headers, params=params)
+        elif method.upper() == "POST":
+            response = test_client.post(f"/api/v1{endpoint}", json=data, headers=headers, params=params)
+        elif method.upper() == "PUT":
+            response = test_client.put(f"/api/v1{endpoint}", json=data, headers=headers, params=params)
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"API Error {response.status_code}: {response.text}")
+            return None
+
+    def register_agent_api(agent_id, role, level):
+        """Register agent via TestClient"""
+        data = {
+            "agent_id": agent_id,
+            "role": role,
+            "level": level,
+            "connection_type": "client"
+        }
+        return api_request("POST", "/register", data=data)
+
+    def get_next_task_api(role, level, simulate=True, timeout=None):
+        """Get next task via TestClient"""
+        params = {"role": role, "level": level}
+        if simulate:
+            params["simulate"] = "true"
+        if timeout is not None:
+            params["timeout"] = timeout
+        return api_request("GET", "/tasks/next", params=params)
+
+    def lock_task_api(task_id, agent_id):
+        """Lock task via TestClient"""
+        return api_request("POST", f"/tasks/{task_id}/lock", params={"agent_id": agent_id})
     
     print("=== Backend Developer Task Assignment Test ===\n")
     
@@ -115,8 +110,7 @@ def test_backend_dev_scenarios():
     
     print("\n4. Current task distribution:")
     # Query all backend_dev tasks
-    headers = {"X-API-Key": API_KEY}
-    response = requests.get(f"{BASE_URL}/tasks?role=backend_dev", headers=headers)
+    response = test_client.get("/api/v1/tasks", headers=headers, params={"role": "backend_dev"})
     
     if response.status_code == 200:
         tasks = response.json()
