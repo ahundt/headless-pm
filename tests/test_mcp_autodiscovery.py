@@ -81,11 +81,17 @@ class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
 
     def setup_method(self, method):
-        """Setup test method with server manager."""
-        self.server_manager = ServerManager(port=6969)
+        """Setup test method with unique port for isolation."""
+        # Use method name hash to get consistent but unique port per test
+        import hashlib
+        method_hash = abs(hash(f"{self.__class__.__name__}::{method.__name__}")) % 1000
+        unique_port = 9000 + method_hash  # Port range 9000-9999
+        self.server_manager = ServerManager(port=unique_port)
         
-    async def is_api_running(self, base_url: str = "http://localhost:6969") -> bool:
+    async def is_api_running(self, base_url: str = None) -> bool:
         """Check if API is responding."""
+        if base_url is None:
+            base_url = self.server_manager.base_url
         port = int(base_url.split(':')[-1].split('/')[0])
         manager = ServerManager(port)
         return await manager.is_api_running()
@@ -123,7 +129,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=mcp_server_path.parent.parent.parent,
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:
@@ -222,7 +228,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=mcp_server_path.parent.parent.parent,
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             # Give MCP server time to connect
@@ -284,7 +290,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=mcp_server_path.parent.parent.parent,
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:
@@ -421,7 +427,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=mcp_server_path.parent.parent.parent,
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:

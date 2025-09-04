@@ -42,6 +42,12 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
+# Import atomic file operations utility (handle both relative and absolute imports)
+try:
+    from ..utils.atomic_file_ops import AtomicFileOperations, ProcessCoordinationLock, with_coordination_lock
+except ImportError:
+    from src.utils.atomic_file_ops import AtomicFileOperations, ProcessCoordinationLock, with_coordination_lock
+
 # Optional psutil import for process management (graceful fallback if missing)
 try:
     import psutil
@@ -563,55 +569,42 @@ class HeadlessPMMCPServer:
         """Register this MCP client and return True if we should start API."""
         coordination_file = self._get_mcp_coordination_file()
         
-        try:
-            # Use file locking for atomic operations
-            with open(coordination_file, 'a+') as f:
-                _lock_file(f)
-                f.seek(0)
-                
+        def add_client(data: Dict) -> Dict:
+            """Add this client to coordination data."""
+            # Clean up stale entries (processes that no longer exist)
+            active_clients = {}
+            for client_id, info in data.get('clients', {}).items():
                 try:
-                    content = f.read().strip()
-                    if content:
-                        f.seek(0)  # Reset position for json.load
-                        data = json.load(f)
-                    else:
-                        data = {}
-                except json.JSONDecodeError:
-                    data = {}
-                
-                f.seek(0)
-                f.truncate()
-                
-                # Clean up stale entries (processes that no longer exist)
-                active_clients = {}
-                for client_id, info in data.get('clients', {}).items():
-                    try:
-                        pid = info.get('pid')
-                        if pid and psutil.pid_exists(pid):
-                            active_clients[client_id] = info
-                    except:
-                        pass  # Remove stale entries
-                
-                # Add this client
-                active_clients[self._client_id] = {
-                    'pid': os.getpid(),
-                    'timestamp': time.time()
-                }
-                
-                # Update data
-                data['clients'] = active_clients
-                data['api_pid'] = data.get('api_pid')  # Preserve existing API PID
-                
-                temp_data = json.dumps(data, indent=2)
-                f.write(temp_data)
-                f.flush()
-                _unlock_file(f)
-                
-                # Return True if this is the first client (should start API)
-                should_start = len(active_clients) == 1
-                logger.info(f"Registered MCP client {self._client_id} ({len(active_clients)} total clients)")
-                return should_start
-                
+                    pid = info.get('pid')
+                    if pid and HAS_PSUTIL and psutil.pid_exists(pid):
+                        active_clients[client_id] = info
+                except:
+                    pass  # Remove stale entries
+            
+            # Add this client
+            active_clients[self._client_id] = {
+                'pid': os.getpid(),
+                'timestamp': time.time()
+            }
+            
+            # Update data
+            data['clients'] = active_clients
+            data['api_pid'] = data.get('api_pid')  # Preserve existing API PID
+            
+            return data
+        
+        try:
+            # Use atomic file operations
+            result = AtomicFileOperations.atomic_json_update(
+                coordination_file, add_client, {'clients': {}}
+            )
+            
+            client_count = len(result.get('clients', {}))
+            should_start = client_count == 1
+            
+            logger.info(f"Registered MCP client {self._client_id} ({client_count} total clients)")
+            return should_start
+            
         except Exception as e:
             logger.warning(f"Could not register MCP client: {e}")
             return True  # Default to starting API if coordination fails
@@ -619,19 +612,12 @@ class HeadlessPMMCPServer:
     def _unregister_mcp_client(self) -> bool:
         """Unregister this MCP client and return True if we should cleanup API."""
         coordination_file = self._get_mcp_coordination_file()
+        port = os.environ.get('SERVICE_PORT', '6969')
         
-        try:
-            if not coordination_file.exists():
-                return False
-                
-            with open(coordination_file, 'r+') as f:
-                _lock_file(f)
-                
-                try:
-                    data = json.load(f)
-                except json.JSONDecodeError:
-                    data = {}
-                
+        def coordinated_unregister():
+            """Perform unregister with coordination lock."""
+            def remove_client(data: Dict) -> Dict:
+                """Remove this client from coordination data."""
                 clients = data.get('clients', {})
                 clients.pop(self._client_id, None)
                 
@@ -640,33 +626,44 @@ class HeadlessPMMCPServer:
                 for client_id, info in clients.items():
                     try:
                         pid = info.get('pid')
-                        if pid and psutil.pid_exists(pid):
+                        if pid and HAS_PSUTIL and psutil.pid_exists(pid):
                             active_clients[client_id] = info
                     except:
-                        pass
+                        pass  # Remove stale entries
                 
                 data['clients'] = active_clients
-                
-                f.seek(0)
-                f.truncate()
-                temp_data = json.dumps(data, indent=2)
-                f.write(temp_data)
-                f.flush()
-                _unlock_file(f)
-                
-                # Return True if this was the last client (should cleanup API)
-                should_cleanup = len(active_clients) == 0
-                logger.info(f"Unregistered MCP client {self._client_id} ({len(active_clients)} remaining clients)")
-                
-                # Remove coordination file if no clients remain
-                if should_cleanup:
-                    try:
-                        coordination_file.unlink()
-                    except:
-                        pass
-                
-                return should_cleanup
-                
+                return data
+            
+            # Atomic file update
+            result = AtomicFileOperations.atomic_json_update(
+                coordination_file, remove_client, {'clients': {}}
+            )
+            
+            client_count = len(result.get('clients', {}))
+            should_cleanup = client_count == 0
+            
+            logger.info(f"Unregistered MCP client {self._client_id} ({client_count} remaining clients)")
+            
+            # Remove coordination file if no clients remain
+            if should_cleanup:
+                try:
+                    coordination_file.unlink()
+                except:
+                    pass
+            
+            return should_cleanup
+        
+        try:
+            # Use coordination lock for atomic unregister + cleanup decision
+            result = with_coordination_lock(
+                f"api_exit_{port}", 
+                coordinated_unregister,
+                timeout=10,
+                client_id=self._client_id
+            )
+            
+            return result if result is not None else False
+            
         except Exception as e:
             logger.warning(f"Could not unregister MCP client: {e}")
             return False  # Default to not cleaning up if coordination fails
