@@ -42,6 +42,10 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
+# Configure logging first (needed for import error messages)
+logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
+logger = logging.getLogger("headless-pm-mcp")
+
 # Import atomic file operations utility (handle both relative and absolute imports)
 try:
     from ..utils.atomic_file_ops import AtomicFileOperations, ProcessCoordinationLock, with_coordination_lock
@@ -108,9 +112,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
     from token_tracker import TokenTracker
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='[MCP] %(message)s')
-logger = logging.getLogger("headless-pm-mcp")
+# Logging already configured at top of file
 
 # Note: Rate limiting now uses file-based coordination only (no global state)
 
