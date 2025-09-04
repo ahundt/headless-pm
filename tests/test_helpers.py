@@ -11,7 +11,7 @@ from typing import Optional, List, Set
 from contextlib import asynccontextmanager
 
 
-class TestServerManager:
+class ServerManager:
     """Manages test servers with proper cleanup and existing server handling."""
     
     def __init__(self, port: int = 6969):
@@ -141,7 +141,7 @@ class MultiClientTestHelper:
     """Helper for multi-client coordination tests."""
     
     def __init__(self, port: int = 6969):
-        self.manager = TestServerManager(port)
+        self.manager = ServerManager(port)
         
     async def test_multi_client_coordination(self) -> bool:
         """Test multi-client coordination with proper cleanup.
@@ -210,13 +210,13 @@ class MultiClientTestHelper:
 # For backwards compatibility
 async def is_api_running(port: int = 6969) -> bool:
     """Check if API is running on given port."""
-    manager = TestServerManager(port)
+    manager = ServerManager(port)
     return await manager.is_api_running()
 
 
 def ensure_clean_state(port: int = 6969):
     """Ensure no test servers running (for test setup)."""
-    manager = TestServerManager(port)
+    manager = ServerManager(port)
     current_pid = manager.find_api_process()
     
     if current_pid:

@@ -23,7 +23,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from src.main import app
 from src.api.dependencies import get_session
 from src.mcp.server import HeadlessPMMCPServer
-from tests.test_helpers import TestServerManager, MultiClientTestHelper
+from tests.test_helpers import ServerManager, MultiClientTestHelper
 
 
 @pytest.fixture
@@ -82,12 +82,12 @@ class TestMCPAutoDiscovery:
 
     def setup_method(self, method):
         """Setup test method with server manager."""
-        self.server_manager = TestServerManager(port=6969)
+        self.server_manager = ServerManager(port=6969)
         
     async def is_api_running(self, base_url: str = "http://localhost:6969") -> bool:
         """Check if API is responding."""
         port = int(base_url.split(':')[-1].split('/')[0])
-        manager = TestServerManager(port)
+        manager = ServerManager(port)
         return await manager.is_api_running()
 
     def ensure_no_api_running(self):
@@ -111,49 +111,79 @@ class TestMCPAutoDiscovery:
         api_was_running = await self.is_api_running()
         
         if api_was_running:
-            # Test connecting to existing API
-            pytest.skip("API already running - test would verify connection (working as designed)")
-            return
-        
-        # Start MCP server process (will start new API) - provide stdin for stdio server
-        mcp_process = subprocess.Popen([
-            "python", str(mcp_server_path)
-        ], 
-        stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=mcp_server_path.parent.parent.parent,  # headless-pm root directory
-        env={**os.environ, "SERVICE_PORT": "6969"}
-        )
-        
-        try:
-            # Wait for API to start (with timeout)
-            api_started = False
-            for attempt in range(30):  # 15 seconds max
-                await asyncio.sleep(0.5)
-                if await self.is_api_running():
-                    api_started = True
-                    break
+            # Test connecting to existing API - DON'T SKIP, test the behavior!
+            print("Testing MCP connecting to existing API on port 6969")
             
-            assert api_started, "API should have been started by MCP server"
+            # Start MCP server that should connect to existing API
+            mcp_process = subprocess.Popen([
+                "python", str(mcp_server_path)
+            ], 
+            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=mcp_server_path.parent.parent.parent,
+            env={**os.environ, "SERVICE_PORT": "6969"}
+            )
             
-            # Test API functionality
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get("http://localhost:6969/health")
-                assert response.status_code == 200
+            try:
+                # Give MCP time to connect
+                await asyncio.sleep(2)
                 
-                # Test authenticated endpoint
-                headers = {"X-API-Key": "XXXXXX"}
-                response = await client.get("http://localhost:6969/api/v1/context", headers=headers)
-                assert response.status_code == 200
+                # API should still be running
+                assert await self.is_api_running(), "API should still be running"
                 
-        finally:
-            # Cleanup
-            if mcp_process.poll() is None:
+                # MCP process should be running (connected to existing API)
+                assert mcp_process.poll() is None, "MCP server should be running"
+                
+                print("✓ MCP successfully connected to existing API")
+                
+            finally:
+                if mcp_process.stdin:
+                    mcp_process.stdin.close()
+                mcp_process.terminate()
+                mcp_process.wait(timeout=5)
+        else:
+            # Test starting new API - use a different port to avoid conflicts
+            test_port = 7878
+            print(f"Testing MCP starting new API on port {test_port}")
+            
+            # Start MCP server process (will start new API) 
+            mcp_process = subprocess.Popen([
+                "python", str(mcp_server_path)
+            ], 
+            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=mcp_server_path.parent.parent.parent,
+            env={**os.environ, "SERVICE_PORT": str(test_port)}
+            )
+            
+            try:
+                # Wait for API to start
+                api_started = False
+                for attempt in range(30):  # 15 seconds max
+                    await asyncio.sleep(0.5)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            response = await client.get(f"http://localhost:{test_port}/health")
+                            if response.status_code == 200:
+                                api_started = True
+                                break
+                    except Exception:
+                        pass
+                
+                assert api_started, f"API should have been started by MCP server on port {test_port}"
+                print(f"✓ MCP successfully started new API on port {test_port}")
+                
+            finally:
+                # Cleanup
+                if mcp_process.stdin:
+                    mcp_process.stdin.close()
                 mcp_process.terminate()
                 try:
-                    mcp_process.wait(timeout=10)
+                    mcp_process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     mcp_process.kill()
                     mcp_process.wait()
@@ -242,11 +272,53 @@ class TestMCPAutoDiscovery:
         api_was_running = await self.is_api_running()
         
         if api_was_running:
-            # Can't test cleanup if API was pre-existing
-            pytest.skip("API already running - cannot test cleanup (pre-existing API preserved)")
-            return
+            # Test with existing API - MCP shouldn't kill it when exiting
+            print("Testing MCP cleanup with existing API - should preserve it")
+            
+            # Start MCP that connects to existing API
+            mcp_process = subprocess.Popen([
+                "python", str(mcp_server_path)
+            ], 
+            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=mcp_server_path.parent.parent.parent,
+            env={**os.environ, "SERVICE_PORT": "6969"}
+            )
+            
+            try:
+                # Give MCP time to connect
+                await asyncio.sleep(2)
+                
+                # Verify MCP is running and API is still up
+                assert mcp_process.poll() is None, "MCP should be running"
+                assert await self.is_api_running(), "API should be running"
+                
+                # Terminate MCP gracefully
+                if mcp_process.stdin:
+                    mcp_process.stdin.close()
+                mcp_process.terminate()
+                mcp_process.wait(timeout=5)
+                
+                # Give time for any cleanup
+                await asyncio.sleep(2)
+                
+                # API should STILL be running (pre-existing, not owned by MCP)
+                assert await self.is_api_running(), "Pre-existing API should remain running after MCP exits"
+                print("✓ Pre-existing API preserved after MCP shutdown")
+                
+            finally:
+                if mcp_process.poll() is None:
+                    mcp_process.terminate()
+                    mcp_process.wait()
+            return  # Exit early for existing API case
         
-        # Start MCP server (will start new API) - provide stdin for stdio server
+        # Test cleanup when MCP starts its own API - use different port
+        test_port = 7879
+        print(f"Testing MCP cleanup when it owns the API on port {test_port}")
+        
+        # Start MCP server (will start new API)
         mcp_process = subprocess.Popen([
             "python", str(mcp_server_path)
         ], 
@@ -255,7 +327,7 @@ class TestMCPAutoDiscovery:
         stderr=subprocess.PIPE,
         text=True,
         cwd=mcp_server_path.parent.parent.parent,
-        env={**os.environ, "SERVICE_PORT": "6969"}
+        env={**os.environ, "SERVICE_PORT": str(test_port)}
         )
         
         try:
@@ -263,11 +335,16 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
-                    api_started = True
-                    break
+                try:
+                    async with httpx.AsyncClient(timeout=2.0) as client:
+                        response = await client.get(f"http://localhost:{test_port}/health")
+                        if response.status_code == 200:
+                            api_started = True
+                            break
+                except Exception:
+                    pass
             
-            assert api_started, "API should have started"
+            assert api_started, f"API should have started on port {test_port}"
             
             # Terminate MCP server gracefully - close stdin to signal stdio server
             if mcp_process.stdin:
@@ -280,11 +357,19 @@ class TestMCPAutoDiscovery:
                 mcp_process.wait()
             
             # Give cleanup time to work
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
-            # API should be shut down (only if we started it)
-            api_running = await self.is_api_running()
-            assert not api_running, "API should be shut down after MCP server cleanup"
+            # API should be shut down (MCP owned it)
+            api_running = False
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(f"http://localhost:{test_port}/health")
+                    api_running = response.status_code == 200
+            except Exception:
+                pass
+                
+            assert not api_running, f"API on port {test_port} should be shut down after MCP cleanup"
+            print(f"✓ MCP-owned API on port {test_port} cleaned up properly")
             
         finally:
             # Emergency cleanup if needed
@@ -443,19 +528,54 @@ class TestMCPAutoDiscovery:
         # Use our robust test helper
         async with self.server_manager.test_context():
             # Check if there's already an API running
-            if await self.server_manager.is_api_running():
-                # Skip test if API already running on our test port
-                pytest.skip("API already running on port 6969, skipping to avoid interference")
-                return
+            api_was_running = await self.server_manager.is_api_running()
             
-            # Start first MCP client (should start API)
-            print("Starting first MCP client...")
-            mcp1_process = self.server_manager.start_mcp_client(wait=False)
-            
-            # Wait for API to start with longer timeout
-            api_started = await self.server_manager.wait_for_api(timeout=30)
-            assert api_started, "API should have started from first MCP client"
-            print("✓ First client started API")
+            if api_was_running:
+                # Test coordination with existing API
+                print("Testing multi-client coordination with existing API on port 6969")
+                
+                # Start first MCP client (should connect to existing)
+                print("Starting first MCP client...")
+                mcp1_process = self.server_manager.start_mcp_client()
+                
+                # API should still be running
+                assert await self.server_manager.is_api_running(), "API should still be running"
+                print("✓ First client connected to existing API")
+            else:
+                # Use different port for test to avoid interference
+                test_port = 7880
+                self.server_manager = ServerManager(port=test_port)
+                print(f"Testing multi-client coordination on port {test_port}")
+                
+                # Start first MCP client (should start API)
+                print("Starting first MCP client...")
+                mcp1_process = subprocess.Popen([
+                    "python", "-m", "src.mcp"
+                ], 
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=mcp_server_path.parent.parent.parent,
+                env={**os.environ, "SERVICE_PORT": str(test_port)}
+                )
+                self.server_manager.started_processes.append(mcp1_process)
+                
+                # Wait for API to start
+                api_started = False
+                for _ in range(30):
+                    await asyncio.sleep(0.5)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            response = await client.get(f"http://localhost:{test_port}/health")
+                            if response.status_code == 200:
+                                api_started = True
+                                break
+                    except Exception:
+                        pass
+                
+                assert api_started, f"API should have started from first MCP client on port {test_port}"
+                print(f"✓ First client started API on port {test_port}")
             
             # Start second MCP client (should connect to existing API)
             print("Starting second MCP client...")
