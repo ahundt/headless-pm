@@ -92,7 +92,7 @@ class ServerManager:
         if proc.poll() is None:  # Process still running
             try:
                 # Close stdin first to signal graceful shutdown for stdio servers
-                if proc.stdin:
+                if proc.stdin and not proc.stdin.closed:
                     proc.stdin.close()
                 proc.terminate()
                 proc.wait(timeout=5)

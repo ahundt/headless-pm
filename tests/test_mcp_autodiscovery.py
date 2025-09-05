@@ -121,7 +121,6 @@ class TestMCPAutoDiscovery:
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
-            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -147,15 +146,14 @@ class TestMCPAutoDiscovery:
                 mcp_process.terminate()
                 mcp_process.wait(timeout=5)
         else:
-            # Test starting new API - use a different port to avoid conflicts
-            test_port = 7878
+            # Test starting new API - use same port for reliability 
+            test_port = 6969
             print(f"Testing MCP starting new API on port {test_port}")
             
             # Start MCP server process (will start new API) 
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
-            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -277,7 +275,6 @@ class TestMCPAutoDiscovery:
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
-            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -312,15 +309,14 @@ class TestMCPAutoDiscovery:
                     mcp_process.wait()
             return  # Exit early for existing API case
         
-        # Test cleanup when MCP starts its own API - use different port
-        test_port = 7879
+        # Test cleanup when MCP starts its own API - use same port for reliability
+        test_port = 6969
         print(f"Testing MCP cleanup when it owns the API on port {test_port}")
         
         # Start MCP server (will start new API)
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
-        stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -382,7 +378,6 @@ class TestMCPAutoDiscovery:
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
-        stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -412,7 +407,6 @@ class TestMCPAutoDiscovery:
             new_mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
-            stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -538,8 +532,8 @@ class TestMCPAutoDiscovery:
                 assert await self.server_manager.is_api_running(), "API should still be running"
                 print("✓ First client connected to existing API")
             else:
-                # Use different port for test to avoid interference
-                test_port = 7880
+                # Use same port for reliability (multi-client coordination test)
+                test_port = 6969
                 self.server_manager = ServerManager(port=test_port)
                 print(f"Testing multi-client coordination on port {test_port}")
                 
