@@ -475,7 +475,7 @@ class TestMCPAutoDiscovery:
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": "6969"}
+        env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
         )
         
         try:
@@ -492,15 +492,15 @@ class TestMCPAutoDiscovery:
             # Test various endpoints with HTTP client
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test unauthenticated health endpoint
-                response = await client.get("http://localhost:6969/health")
+                response = await client.get(f"http://localhost:{self.server_manager.port}/health")
                 assert response.status_code == 200, f"health endpoint should return 200, got {response.status_code}"
                 
                 # Test authenticated endpoints with API key
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 authenticated_endpoints = [
-                    ("context", "http://localhost:6969/api/v1/context"),
-                    ("agents", "http://localhost:6969/api/v1/agents"),
+                    ("context", f"http://localhost:{self.server_manager.port}/api/v1/context"),
+                    ("agents", f"http://localhost:{self.server_manager.port}/api/v1/agents"),
                 ]
                 
                 for test_name, url in authenticated_endpoints:
@@ -609,7 +609,7 @@ class TestMCPAutoDiscovery:
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": "6969"}
+        env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
         )
         
         try:
@@ -626,7 +626,7 @@ class TestMCPAutoDiscovery:
             # Test comprehensive API functionality
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test health endpoint (no auth required)
-                response = await client.get("http://localhost:6969/health")
+                response = await client.get(f"http://localhost:{self.server_manager.port}/health")
                 assert response.status_code == 200
                 health_data = response.json()
                 assert "status" in health_data
@@ -635,7 +635,7 @@ class TestMCPAutoDiscovery:
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 # Test context endpoint (auth required)
-                response = await client.get("http://localhost:6969/api/v1/context", headers=headers)
+                response = await client.get(f"http://localhost:{self.server_manager.port}/api/v1/context", headers=headers)
                 assert response.status_code == 200
                 context_data = response.json()
                 assert "project_name" in context_data or "name" in context_data
@@ -643,7 +643,7 @@ class TestMCPAutoDiscovery:
                 # Skip docs endpoint test - not critical for MCP auto-discovery validation
                 
                 # Test that agents endpoint exists (auth required)
-                response = await client.get("http://localhost:6969/api/v1/agents", headers=headers)
+                response = await client.get(f"http://localhost:{self.server_manager.port}/api/v1/agents", headers=headers)
                 assert response.status_code == 200
                 agents_data = response.json()
                 assert isinstance(agents_data, list)  # Should return list of agents
