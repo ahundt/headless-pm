@@ -82,12 +82,8 @@ class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
 
     def setup_method(self, method):
-        """Setup test method with unique port for isolation."""
-        # Use method name hash to get consistent but unique port per test
-        import hashlib
-        method_hash = abs(hash(f"{self.__class__.__name__}::{method.__name__}")) % 1000
-        unique_port = 9000 + method_hash  # Port range 9000-9999
-        self.server_manager = ServerManager(port=unique_port)
+        """Setup test method with server manager."""
+        self.server_manager = ServerManager(port=6969)
         
     async def is_api_running(self, base_url: str = None) -> bool:
         """Check if API is responding."""
@@ -130,7 +126,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": "6969"}
             )
             
             try:
@@ -151,8 +147,8 @@ class TestMCPAutoDiscovery:
                 mcp_process.terminate()
                 mcp_process.wait(timeout=5)
         else:
-            # Test starting new API - use test's unique port
-            test_port = self.server_manager.port
+            # Test starting new API - use a different port to avoid conflicts
+            test_port = 7878
             print(f"Testing MCP starting new API on port {test_port}")
             
             # Start MCP server process (will start new API) 
@@ -224,7 +220,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": "6969"}
             )
             
             # Give MCP server time to connect
@@ -286,7 +282,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": "6969"}
             )
             
             try:
@@ -316,8 +312,8 @@ class TestMCPAutoDiscovery:
                     mcp_process.wait()
             return  # Exit early for existing API case
         
-        # Test cleanup when MCP starts its own API - use test's unique port
-        test_port = self.server_manager.port
+        # Test cleanup when MCP starts its own API - use different port
+        test_port = 7879
         print(f"Testing MCP cleanup when it owns the API on port {test_port}")
         
         # Start MCP server (will start new API)
@@ -381,8 +377,8 @@ class TestMCPAutoDiscovery:
         """Test recovery when API process crashes."""
         self.ensure_no_api_running()
         
-        # Start MCP server with auto-start - use test's unique port
-        test_port = self.server_manager.port
+        # Start MCP server with auto-start
+        test_port = 6969
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
@@ -421,7 +417,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": "6969"}
             )
             
             try:
@@ -473,17 +469,15 @@ class TestMCPAutoDiscovery:
         """Test API functionality using Python HTTP client like a real client."""
         self.ensure_no_api_running()
         
-        # Start MCP server process - use test's unique port
-        test_port = self.server_manager.port
+        # Start MCP server process
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
-        stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(test_port)}
+        env={**os.environ, "SERVICE_PORT": "6969"}
         )
         
         try:
@@ -495,20 +489,20 @@ class TestMCPAutoDiscovery:
                     api_started = True
                     break
             
-            assert api_started, f"API should have started on port {test_port}"
+            assert api_started, "API should have started"
             
             # Test various endpoints with HTTP client
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test unauthenticated health endpoint
-                response = await client.get(f"http://localhost:{test_port}/health")
+                response = await client.get("http://localhost:6969/health")
                 assert response.status_code == 200, f"health endpoint should return 200, got {response.status_code}"
                 
                 # Test authenticated endpoints with API key
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 authenticated_endpoints = [
-                    ("context", f"http://localhost:{test_port}/api/v1/context"),
-                    ("agents", f"http://localhost:{test_port}/api/v1/agents"),
+                    ("context", "http://localhost:6969/api/v1/context"),
+                    ("agents", "http://localhost:6969/api/v1/agents"),
                 ]
                 
                 for test_name, url in authenticated_endpoints:
@@ -544,8 +538,9 @@ class TestMCPAutoDiscovery:
                 assert await self.server_manager.is_api_running(), "API should still be running"
                 print("✓ First client connected to existing API")
             else:
-                # Use test's unique port
-                test_port = self.server_manager.port
+                # Use different port for test to avoid interference
+                test_port = 7880
+                self.server_manager = ServerManager(port=test_port)
                 print(f"Testing multi-client coordination on port {test_port}")
                 
                 # Start first MCP client (should start API)
@@ -566,9 +561,14 @@ class TestMCPAutoDiscovery:
                 api_started = False
                 for _ in range(30):
                     await asyncio.sleep(0.5)
-                    if await self.server_manager.is_api_running():
-                        api_started = True
-                        break
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            response = await client.get(f"http://localhost:{test_port}/health")
+                            if response.status_code == 200:
+                                api_started = True
+                                break
+                    except Exception:
+                        pass
                 
                 assert api_started, f"API should have started from first MCP client on port {test_port}"
                 print(f"✓ First client started API on port {test_port}")
@@ -603,17 +603,15 @@ class TestMCPAutoDiscovery:
         """Test comprehensive API functionality once launched by MCP server."""
         self.ensure_no_api_running()
         
-        # Start MCP server - use test's unique port
-        test_port = self.server_manager.port
+        # Start MCP server
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
-        stdin=subprocess.PIPE,  # MCP is stdio-based, needs stdin
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(test_port)}
+        env={**os.environ, "SERVICE_PORT": "6969"}
         )
         
         try:
@@ -625,12 +623,12 @@ class TestMCPAutoDiscovery:
                     api_started = True
                     break
             
-            assert api_started, f"API should have started on port {test_port}"
+            assert api_started, "API should have started"
             
             # Test comprehensive API functionality
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test health endpoint (no auth required)
-                response = await client.get(f"http://localhost:{test_port}/health")
+                response = await client.get("http://localhost:6969/health")
                 assert response.status_code == 200
                 health_data = response.json()
                 assert "status" in health_data
@@ -639,7 +637,7 @@ class TestMCPAutoDiscovery:
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 # Test context endpoint (auth required)
-                response = await client.get(f"http://localhost:{test_port}/api/v1/context", headers=headers)
+                response = await client.get("http://localhost:6969/api/v1/context", headers=headers)
                 assert response.status_code == 200
                 context_data = response.json()
                 assert "project_name" in context_data or "name" in context_data
@@ -647,7 +645,7 @@ class TestMCPAutoDiscovery:
                 # Skip docs endpoint test - not critical for MCP auto-discovery validation
                 
                 # Test that agents endpoint exists (auth required)
-                response = await client.get(f"http://localhost:{test_port}/api/v1/agents", headers=headers)
+                response = await client.get("http://localhost:6969/api/v1/agents", headers=headers)
                 assert response.status_code == 200
                 agents_data = response.json()
                 assert isinstance(agents_data, list)  # Should return list of agents

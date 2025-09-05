@@ -7,6 +7,7 @@ import time
 import httpx
 import asyncio
 import psutil
+from pathlib import Path
 from typing import Optional, List, Set
 from contextlib import asynccontextmanager
 
@@ -53,6 +54,8 @@ class ServerManager:
     
     def start_mcp_client(self, env: dict = None, wait: bool = True) -> subprocess.Popen:
         """Start an MCP client process and track it."""
+        import sys
+        
         if env is None:
             env = {}
         
@@ -61,7 +64,7 @@ class ServerManager:
         # MCP server expects to run as stdio server, so we need to provide stdin
         # to keep it running. We use PIPE for stdin so the process doesn't exit.
         proc = subprocess.Popen(
-            ["python", "-m", "src.mcp"],
+            [sys.executable, "-m", "src.mcp"],
             stdin=subprocess.PIPE,  # Important: MCP server needs stdin to stay alive
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -83,7 +86,7 @@ class ServerManager:
                 return True
             await asyncio.sleep(1)
         return False
-    
+
     def cleanup_process(self, proc: subprocess.Popen):
         """Safely cleanup a single process."""
         if proc.poll() is None:  # Process still running

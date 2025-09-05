@@ -32,6 +32,7 @@ async def test_multi_client_coordination():
     print('\n1. Starting first MCP client...')
     env1 = {'SERVICE_PORT': '9876', **os.environ}
     proc1 = subprocess.Popen(['python', '-m', 'src.mcp'],
+        stdin=subprocess.PIPE,  # MCP server needs stdin to stay alive
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env=env1, text=True)
     
@@ -57,6 +58,7 @@ async def test_multi_client_coordination():
     print('\n2. Starting second MCP client...')
     env2 = {'SERVICE_PORT': '9876', **os.environ}
     proc2 = subprocess.Popen(['python', '-m', 'src.mcp'],
+        stdin=subprocess.PIPE,  # MCP server needs stdin to stay alive
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env=env2, text=True)
     
