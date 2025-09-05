@@ -126,16 +126,42 @@ class TestHeadlessPMClient(unittest.TestCase):
                 except Exception as e:
                     print(f"Cleanup error: {e}")
         
-        # Finally, delete PM agent
+        # Create separate cleanup admin agent to delete PM agent properly
         try:
-            cls.client.delete_agent(cls.pm_agent_id, cls.pm_agent_id)
+            cleanup_admin_id = f"cleanup_admin_{cls.test_run_id}"
+            cleanup_client = TestableHeadlessPMClient()
+            
+            # Register cleanup admin
+            cleanup_client.register_agent(
+                agent_id=cleanup_admin_id,
+                role="pm", 
+                level="principal",
+                connection_type="client"
+            )
+            
+            # Use admin to delete PM agent
+            cleanup_client.delete_agent(cls.pm_agent_id, cleanup_admin_id)
             print(f"✓ Deleted PM agent: {cls.pm_agent_id}")
+            
+            # Create second admin to delete first admin (solve self-deletion issue)
+            cleanup_admin2_id = f"cleanup_admin2_{cls.test_run_id}"
+            cleanup_client.register_agent(
+                agent_id=cleanup_admin2_id,
+                role="pm",
+                level="principal", 
+                connection_type="client"
+            )
+            
+            # Second admin deletes first admin
+            cleanup_client.delete_agent(cleanup_admin_id, cleanup_admin2_id)
+            print(f"✓ Deleted cleanup admin: {cleanup_admin_id}")
+            
+            # Second admin remains (acceptable for test isolation)
+            print(f"Note: cleanup_admin2 {cleanup_admin2_id} remains (no self-deletion)")
+            
         except Exception as e:
-            # It's expected that PM agent can't delete itself
-            if "Cannot delete your own agent record" in str(e):
-                print(f"✓ PM agent {cls.pm_agent_id} remains (cannot self-delete)")
-            else:
-                print(f"Failed to delete PM agent: {e}")
+            print(f"Cleanup admin approach failed: {e}")
+            print(f"PM agent {cls.pm_agent_id} remains (manual cleanup may be needed)")
     
     @classmethod
     def _cleanup_resource(cls, resource_type: str, resource_id: Any):

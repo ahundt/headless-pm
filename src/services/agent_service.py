@@ -154,14 +154,9 @@ def delete_agent(agent_id: str, requester_agent_id: str, db: Session) -> dict:
     # Verify requester is PM
     requester = verify_agent_role(requester_agent_id, [AgentRole.PM], db)
     
-    # Allow self-deletion for test cleanup, but warn for production use
+    # Prevent PM from deleting themselves
     if agent_id == requester_agent_id:
-        # In test environment, allow self-deletion for cleanup
-        import os
-        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING"):
-            pass  # Allow self-deletion in tests
-        else:
-            raise HTTPException(status_code=400, detail="Cannot delete your own agent record")
+        raise HTTPException(status_code=400, detail="Cannot delete your own agent record")
     
     agent = db.exec(select(Agent).where(Agent.agent_id == agent_id)).first()
     if not agent:

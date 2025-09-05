@@ -481,23 +481,34 @@ class HeadlessPMMCPServer:
                 ["uv", "run", "--", "python", "-m", "src.main"],
             ])
         else:
-            # Normal discovery order for non-MCP contexts
+            # Normal discovery order for non-MCP contexts - prioritize port-aware commands
+            try:
+                from src.main import get_port
+                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+            except ImportError:
+                service_port = os.environ.get("SERVICE_PORT", "6969")
+                
             candidates.extend([
-                # 1. Global installations (safe in non-MCP context)
+                # 1. Port-aware commands first (respect SERVICE_PORT)
+                ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", service_port],
+                [current_python, "-m", "src.main"],
+                ["python3", "-m", "src.main"],
+                
+                # 2. Global installations (may ignore SERVICE_PORT)
                 ["headless-pm"],
                 ["headless-pm-mcp"],
 
-                # 2. Same Python interpreter (consistency)
+                # 3. Same Python interpreter (consistency)
                 [current_python, "-m", "headless_pm"],
 
-                # 3. UV commands
+                # 4. UV commands
                 ["uv", "run", "headless-pm"],
                 ["uv", "run", "start"],
 
-                # 4. Virtual environments
+                # 5. Virtual environments
                 *self._get_venv_commands(),
 
-                # 5. Direct Python execution
+                # 6. Direct Python execution
                 ["python3", "-m", "headless_pm"],
                 ["python", "-m", "headless_pm"],
             ])

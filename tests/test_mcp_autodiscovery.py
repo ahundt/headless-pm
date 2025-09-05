@@ -82,8 +82,12 @@ class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
 
     def setup_method(self, method):
-        """Setup test method with server manager."""
-        self.server_manager = ServerManager(port=6969)
+        """Setup test method with unique port for isolation."""
+        # Use method name hash to get consistent but unique port per test
+        import hashlib
+        method_hash = abs(hash(f"{self.__class__.__name__}::{method.__name__}")) % 1000
+        unique_port = 9000 + method_hash  # Port range 9000-9999
+        self.server_manager = ServerManager(port=unique_port)
         
     async def is_api_running(self, base_url: str = None) -> bool:
         """Check if API is responding."""
@@ -125,7 +129,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:
@@ -146,8 +150,8 @@ class TestMCPAutoDiscovery:
                 mcp_process.terminate()
                 mcp_process.wait(timeout=5)
         else:
-            # Test starting new API - use same port for reliability 
-            test_port = 6969
+            # Test starting new API - use test's unique port
+            test_port = self.server_manager.port
             print(f"Testing MCP starting new API on port {test_port}")
             
             # Start MCP server process (will start new API) 
@@ -218,7 +222,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             # Give MCP server time to connect
@@ -279,7 +283,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:
@@ -309,8 +313,8 @@ class TestMCPAutoDiscovery:
                     mcp_process.wait()
             return  # Exit early for existing API case
         
-        # Test cleanup when MCP starts its own API - use same port for reliability
-        test_port = 6969
+        # Test cleanup when MCP starts its own API - use test's unique port
+        test_port = self.server_manager.port
         print(f"Testing MCP cleanup when it owns the API on port {test_port}")
         
         # Start MCP server (will start new API)
@@ -373,8 +377,8 @@ class TestMCPAutoDiscovery:
         """Test recovery when API process crashes."""
         self.ensure_no_api_running()
         
-        # Start MCP server with auto-start
-        test_port = 6969
+        # Start MCP server with auto-start - use test's unique port
+        test_port = self.server_manager.port
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
@@ -411,7 +415,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": "6969"}
+            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
             )
             
             try:
@@ -532,8 +536,8 @@ class TestMCPAutoDiscovery:
                 assert await self.server_manager.is_api_running(), "API should still be running"
                 print("✓ First client connected to existing API")
             else:
-                # Use same port for reliability (multi-client coordination test)
-                test_port = 6969
+                # Use test's unique port for isolation
+                test_port = self.server_manager.port
                 self.server_manager = ServerManager(port=test_port)
                 print(f"Testing multi-client coordination on port {test_port}")
                 
