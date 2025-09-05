@@ -496,3 +496,24 @@ echo "✅ SUCCESS: All 5 runs passed with 140 passed, 0 failed, 0 skipped"
 **CRITICAL**: Never commit claiming test success without this validation process.
 
 This document provides everything needed for a new developer to understand the race condition issues and continue working toward the 140 passed, 0 failed, 0 skipped goal.
+
+## Update 2025-09-05: Debugging Progress
+
+Applied systematic debugging using multithreading, multiprocess, and lock contention expertise.
+
+### Issues Identified and Fixed:
+1. **Logger initialization order** (`src/mcp/server.py:45-47`): Logger used before definition caused import errors
+2. **MCP command discovery** (`src/mcp/server.py:484-514`): Global commands ignored SERVICE_PORT environment 
+3. **Port isolation** (`tests/test_mcp_autodiscovery.py:84-90`): Tests needed unique ports with working command discovery
+4. **Test cleanup design** (`tests/test_headless_pm_client.py:129-164`): PM agents need separate admin for proper cleanup
+
+### Current Results:
+- **Full suite**: 141 passed, 2 failed from 143 tests
+- **MCP autodiscovery**: 10 passed, 1 failed (improved from ~5/11)  
+- **Individual tests**: Pass reliably with proper port isolation
+- **Consistency**: Same results across multiple runs (not intermittent)
+
+### Remaining Work:
+- Fix `test_race_condition_detector.py::test_coordination_file_atomicity`
+- Investigate intermittent `test_api_functionality_with_http_client` in suite context
+- Validate 5 consecutive identical runs for full reliability
