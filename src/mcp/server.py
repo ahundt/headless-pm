@@ -682,58 +682,57 @@ class HeadlessPMMCPServer:
             return False  # Default to not cleaning up if coordination fails
 
     async def _check_startup_rate_limit(self, port: int) -> bool:
-        """Check startup rate limit using simple file-based coordination (deadlock-safe)."""
+        """Check startup rate limit using atomic file operations for consistency."""
         coordination_file = self._get_mcp_coordination_file()
         now = time.time()
         
+        def update_rate_limit_data(data: Dict) -> Dict:
+            """Update rate limiting data atomically."""
+            # Initialize rate limits structure
+            if 'rate_limits' not in data:
+                data['rate_limits'] = {}
+            
+            # Check rate limiting data
+            port_key = str(port)
+            rate_data = data['rate_limits'].get(port_key, {'attempts': []})
+            
+            # Clean up old attempts (older than 5 minutes)
+            cutoff = now - 300
+            rate_data['attempts'] = [attempt for attempt in rate_data['attempts'] if attempt > cutoff]
+            
+            # Check if rate limit exceeded (need 4+ attempts, so block starting from 4th)
+            recent_attempts = [attempt for attempt in rate_data['attempts'] if now - attempt < 5.0]
+            if len(recent_attempts) >= 3:  # This will be the 4th attempt
+                logger.warning(f"Rate limit exceeded for port {port}: {len(recent_attempts) + 1} attempts in 5 seconds")
+                # Don't update data, just return current state
+                return data
+            
+            # Record this attempt
+            rate_data['attempts'].append(now)
+            
+            # Ensure rate_limits structure exists
+            if 'rate_limits' not in data:
+                data['rate_limits'] = {}
+            data['rate_limits'][port_key] = rate_data
+            
+            return data
+        
         try:
-            # Simple file-based rate limiting without nested locks
-            with open(coordination_file, 'a+') as f:
-                _lock_file(f)
-                f.seek(0)
-                
-                try:
-                    content = f.read().strip()
-                    if content:
-                        f.seek(0)  # Reset position for json.load
-                        data = json.load(f)
-                    else:
-                        data = {}
-                except json.JSONDecodeError:
-                    data = {}
-                
-                # Check rate limiting data
-                port_key = str(port)
-                rate_data = data.get('rate_limits', {}).get(port_key, {'attempts': []})
-                
-                # Clean up old attempts (older than 5 minutes)
-                cutoff = now - 300
-                rate_data['attempts'] = [attempt for attempt in rate_data['attempts'] if attempt > cutoff]
-                
-                # Check if rate limit exceeded
+            # Use atomic file operations for cross-platform consistency
+            result_data = AtomicFileOperations.atomic_json_update(
+                coordination_file, update_rate_limit_data, {}
+            )
+            
+            # Check if rate limit was exceeded
+            port_key = str(port)
+            if 'rate_limits' in result_data and port_key in result_data['rate_limits']:
+                rate_data = result_data['rate_limits'][port_key]
                 recent_attempts = [attempt for attempt in rate_data['attempts'] if now - attempt < 5.0]
                 if len(recent_attempts) >= 3:
-                    logger.warning(f"Rate limit exceeded for port {port}: {len(recent_attempts)} attempts in 5 seconds")
                     return False
-                
-                # Record this attempt
-                rate_data['attempts'].append(now)
-                
-                # Update data
-                if 'rate_limits' not in data:
-                    data['rate_limits'] = {}
-                data['rate_limits'][port_key] = rate_data
-                
-                # Atomic write back to prevent corruption
-                temp_data = json.dumps(data, indent=2)
-                f.seek(0)
-                f.truncate()
-                f.write(temp_data)
-                f.flush()  # Ensure data is written to disk
-                _unlock_file(f)
-                
-                return True
-                
+            
+            return True
+            
         except Exception as e:
             logger.warning(f"Rate limit check failed: {e} - allowing startup")
             return True  # Fail open for availability
