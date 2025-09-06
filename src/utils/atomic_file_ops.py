@@ -8,6 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar
+import psutil
 
 T = TypeVar('T')
 
@@ -19,35 +20,25 @@ class AtomicFileOperations:
     def atomic_json_update(file_path: Path, update_func: Callable[[Dict], Dict], 
                           default_data: Optional[Dict] = None) -> Dict:
         """
-        Atomically update a JSON file using tempfile + rename.
-        
-        Args:
-            file_path: Path to the JSON file
-            update_func: Function that takes current data and returns new data
-            default_data: Default data if file doesn't exist
-            
-        Returns:
-            The updated data that was written
-            
-        Example:
-            def add_client(data):
-                data.setdefault('clients', []).append({'id': 'new_client'})
-                return data
-                
-            result = AtomicFileOperations.atomic_json_update(
-                Path('/tmp/coordination.json'), add_client, {'clients': []}
-            )
+        Atomically update a JSON file using a file lock and a tempfile + rename pattern.
+        This ensures both the read-modify-write cycle and the write operation itself are safe.
         """
-        file_path = Path(file_path)
+        lock = ProcessCoordinationLock(lock_name=f"{file_path.name}.lock", base_dir=file_path.parent)
         
-        # Read current data safely
-        current_data = AtomicFileOperations._read_json_safe(file_path, default_data or {})
-        
-        # Apply update function
-        updated_data = update_func(current_data.copy())
-        
-        # Write atomically using tempfile + rename
-        return AtomicFileOperations._write_json_atomic(file_path, updated_data)
+        if not lock.acquire(timeout=15):
+            raise TimeoutError(f"Could not acquire lock for {file_path} after 15 seconds.")
+            
+        try:
+            # Read current data safely
+            current_data = AtomicFileOperations._read_json_safe(file_path, default_data or {})
+            
+            # Apply update function
+            updated_data = update_func(current_data.copy())
+            
+            # Write atomically using tempfile + rename
+            return AtomicFileOperations._write_json_atomic(file_path, updated_data)
+        finally:
+            lock.release()
     
     @staticmethod
     def _read_json_safe(file_path: Path, default: Dict) -> Dict:
@@ -122,28 +113,41 @@ class ProcessCoordinationLock:
             True if lock acquired, False if timeout
         """
         client_info = f"{client_id}:{os.getpid()}:{int(time.time())}" if client_id else f"{os.getpid()}:{int(time.time())}"
-        
-        for _ in range(timeout * 10):  # 0.1 second intervals
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
             try:
-                # Atomic create with exclusive flag - this prevents races
-                with open(self.lock_file, 'x') as f:  # 'x' = exclusive creation
+                # The primary, atomic way to acquire the lock
+                with open(self.lock_file, 'x') as f:
                     f.write(client_info)
-                    f.flush()
-                    os.fsync(f.fileno())
-                    
                 self.acquired = True
                 return True
-                
             except FileExistsError:
-                # Lock exists, check if it's stale
-                if self._is_stale_lock():
-                    self._cleanup_stale_lock()
-                    continue  # Try again
+                # Lock exists. We must now safely determine if it's stale.
+                try:
+                    # Read the PID of the process that holds the lock.
+                    with open(self.lock_file, 'r') as f:
+                        lock_content = f.read()
                     
+                    stale_pid = int(lock_content.split(':')[1])
+
+                    # The critical check: is the process still alive?
+                    if not psutil.pid_exists(stale_pid):
+                        # The lock-holder process is dead. The lock is stale.
+                        # We can now attempt to remove the stale lock.
+                        os.unlink(self.lock_file)
+                        # Immediately loop to try acquiring the lock again.
+                        continue
+                except (IOError, IndexError, ValueError, psutil.NoSuchProcess):
+                    # This can happen if the lock is released by another process
+                    # between the FileExistsError and this block. It's a normal
+                    # part of the race, so we just wait and retry.
+                    pass
+
+                # If we reach here, the lock exists and is held by a live process. Wait.
                 time.sleep(0.1)
-                continue
                 
-        return False
+        return False # Timeout
     
     def release(self):
         """Release the lock."""
