@@ -81,72 +81,74 @@ def mcp_server_path():
 class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
 
-    def setup_method(self, method):
-        """Setup test method with unique port and aggressive pre-flight checks."""
+    @pytest.fixture
+    async def server_manager(self, request):
+        """Pytest fixture for reliable test lifecycle management."""
         import hashlib, subprocess, os, pytest
-        method_hash = abs(hash(f"{self.__class__.__name__}::{method.__name__}")) % 1000
+        
+        # Calculate unique port for test isolation
+        method_name = request.function.__name__
+        class_name = request.cls.__name__
+        method_hash = abs(hash(f"{class_name}::{method_name}")) % 1000
         unique_port = 9000 + method_hash
 
-        # --- AGGRESSIVE PRE-FLIGHT CHECK ---
-        print(f"\n[SETUP {method.__name__}]: Using port {unique_port}. Verifying clean state...")
+        # Aggressive pre-flight checks
+        print(f"\n[FIXTURE SETUP {method_name}]: Using port {unique_port}. Verifying clean state...")
         try:
-            # Check 1: Is a process listening on the target port?
-            # The `lsof` command is specific to Unix-like systems. A cross-platform
-            # solution would use `psutil`, but for this diagnostic, `lsof` is sufficient.
             lsof_command = f"lsof -i :{unique_port}"
             result = subprocess.run(lsof_command, shell=True, check=False, capture_output=True)
-            if result.returncode == 0: # A return code of 0 means a process was found
+            if result.returncode == 0:
                 pytest.fail(
                     f"PRE-FLIGHT CHECK FAILED: Port {unique_port} is already in use before test start.\n"
                     f"Leaking process info:\n{result.stdout.decode()}",
                     pytrace=False
                 )
-            print(f"[SETUP {method.__name__}]: Port {unique_port} is confirmed free.")
+            print(f"[FIXTURE SETUP {method_name}]: Port {unique_port} is confirmed free.")
         except Exception as e:
-            # Handle cases where lsof is not available, though it shouldn't happen in the test env.
             print(f"Warning: lsof command failed during pre-flight check: {e}")
 
-        # Check 2: Does a stale coordination file exist?
+        # Clean stale coordination file
         coord_file = "/tmp/headless_pm_mcp_coordination.json"
         if os.path.exists(coord_file):
             os.remove(coord_file)
-            print(f"[SETUP {method.__name__}]: Removed stale coordination file.")
+            print(f"[FIXTURE SETUP {method_name}]: Removed stale coordination file.")
 
-        self.server_manager = ServerManager(port=unique_port)
-
-    async def teardown_method(self, method):
-        """Ensure all processes are cleaned up after each test."""
-        print(f"\n[TEARDOWN {method.__name__}]: Cleaning up server manager processes...")
-        if hasattr(self, 'server_manager'):
-            await self.server_manager.cleanup()
+        # Create and yield server manager
+        manager = ServerManager(port=unique_port)
         
-    async def is_api_running(self, base_url: str = None) -> bool:
+        try:
+            yield manager
+        finally:
+            # Guaranteed async cleanup
+            print(f"\n[FIXTURE TEARDOWN {method_name}]: Cleaning up server manager processes...")
+            await manager.cleanup()
+        
+    async def is_api_running(self, server_manager, base_url: str = None) -> bool:
         """Check if API is responding."""
         if base_url is None:
-            base_url = self.server_manager.base_url
+            base_url = server_manager.base_url
         port = int(base_url.split(':')[-1].split('/')[0])
         manager = ServerManager(port)
         return await manager.is_api_running()
 
-    def ensure_no_api_running(self):
+    def ensure_no_api_running(self, server_manager):
         """Ensure no API processes are running on test port.
         
         This now preserves existing servers and only warns about them.
         """
         # Just check and warn, don't kill
-        if hasattr(self, 'server_manager'):
-            existing_pid = self.server_manager.find_api_process()
-            if existing_pid:
-                print(f"Warning: Existing API found on port 6969 (PID: {existing_pid})")
-                print("Test will work with existing server or use different port")
+        existing_pid = server_manager.find_api_process()
+        if existing_pid:
+            print(f"Warning: Existing API found on port {server_manager.port} (PID: {existing_pid})")
+            print("Test will work with existing server or use different port")
 
     @pytest.mark.asyncio
-    async def test_auto_start_when_no_api_running(self, mcp_server_path):
+    async def test_auto_start_when_no_api_running(self, server_manager, mcp_server_path):
         """Test that MCP server starts API when none is running OR connects to existing."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Check if API is already running
-        api_was_running = await self.is_api_running()
+        api_was_running = await self.is_api_running(server_manager)
         
         if api_was_running:
             # Test connecting to existing API - DON'T SKIP, test the behavior!
@@ -160,7 +162,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
             )
             
             try:
@@ -168,7 +170,7 @@ class TestMCPAutoDiscovery:
                 await asyncio.sleep(2)
                 
                 # API should still be running
-                assert await self.is_api_running(), "API should still be running"
+                assert await self.is_api_running(server_manager), "API should still be running"
                 
                 # MCP process should be running (connected to existing API)
                 assert mcp_process.poll() is None, "MCP server should be running"
@@ -182,7 +184,7 @@ class TestMCPAutoDiscovery:
                 mcp_process.wait(timeout=5)
         else:
             # Test starting new API - use test's unique port
-            test_port = self.server_manager.port
+            test_port = server_manager.port
             print(f"Testing MCP starting new API on port {test_port}")
             
             # Start MCP server process (will start new API) 
@@ -201,7 +203,7 @@ class TestMCPAutoDiscovery:
                 api_started = False
                 for attempt in range(30):  # 15 seconds max
                     await asyncio.sleep(0.5)
-                    if await self.is_api_running():
+                    if await self.is_api_running(server_manager):
                         api_started = True
                         break
                 
@@ -220,9 +222,9 @@ class TestMCPAutoDiscovery:
                     mcp_process.wait()
 
     @pytest.mark.asyncio
-    async def test_connect_to_existing_api(self, mcp_server_path):
+    async def test_connect_to_existing_api(self, server_manager, mcp_server_path):
         """Test that MCP server connects to existing API without starting new one."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Start API manually first - use the test's unique port
         api_process = subprocess.Popen([
@@ -231,7 +233,7 @@ class TestMCPAutoDiscovery:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+        env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
         )
         
         try:
@@ -239,7 +241,7 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
+                if await self.is_api_running(server_manager):
                     api_started = True
                     break
             
@@ -253,14 +255,14 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
             )
             
             # Give MCP server time to connect
             await asyncio.sleep(2)
             
             # Verify API is still running (should be the original one)
-            assert await self.is_api_running(), "API should still be running"
+            assert await self.is_api_running(server_manager), "API should still be running"
             
             # MCP server should terminate cleanly when killed
             if mcp_process.poll() is None:
@@ -268,7 +270,7 @@ class TestMCPAutoDiscovery:
                 mcp_process.wait(timeout=5)
             
             # Original API should still be running
-            assert await self.is_api_running(), "Original API should still be running"
+            assert await self.is_api_running(server_manager), "Original API should still be running"
             
         finally:
             # Cleanup both processes
@@ -277,7 +279,7 @@ class TestMCPAutoDiscovery:
                 api_process.wait()
 
     @pytest.mark.asyncio
-    async def test_command_discovery(self, mcp_server_path):
+    async def test_command_discovery(self, server_manager, mcp_server_path):
         """Test that MCP server can find headless-pm command."""
         # This is a unit test of the command discovery logic
         import sys
@@ -296,12 +298,12 @@ class TestMCPAutoDiscovery:
         assert len(command) > 0, "Command list should not be empty"
 
     @pytest.mark.asyncio 
-    async def test_process_cleanup_on_shutdown(self, mcp_server_path):
+    async def test_process_cleanup_on_shutdown(self, server_manager, mcp_server_path):
         """Test that API process is cleaned up when MCP server shuts down."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Check if API is already running
-        api_was_running = await self.is_api_running()
+        api_was_running = await self.is_api_running(server_manager)
         
         if api_was_running:
             # Test with existing API - MCP shouldn't kill it when exiting
@@ -315,7 +317,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
             )
             
             try:
@@ -324,7 +326,7 @@ class TestMCPAutoDiscovery:
                 
                 # Verify MCP is running and API is still up
                 assert mcp_process.poll() is None, "MCP should be running"
-                assert await self.is_api_running(), "API should be running"
+                assert await self.is_api_running(server_manager), "API should be running"
                 
                 # Terminate MCP gracefully
                 if mcp_process.stdin:
@@ -336,7 +338,7 @@ class TestMCPAutoDiscovery:
                 await asyncio.sleep(2)
                 
                 # API should STILL be running (pre-existing, not owned by MCP)
-                assert await self.is_api_running(), "Pre-existing API should remain running after MCP exits"
+                assert await self.is_api_running(server_manager), "Pre-existing API should remain running after MCP exits"
                 print("✓ Pre-existing API preserved after MCP shutdown")
                 
             finally:
@@ -346,7 +348,7 @@ class TestMCPAutoDiscovery:
             return  # Exit early for existing API case
         
         # Test cleanup when MCP starts its own API - use test's unique port
-        test_port = self.server_manager.port
+        test_port = server_manager.port
         print(f"Testing MCP cleanup when it owns the API on port {test_port}")
         
         # Start MCP server (will start new API)
@@ -365,7 +367,7 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
+                if await self.is_api_running(server_manager):
                     api_started = True
                     break
             
@@ -402,15 +404,15 @@ class TestMCPAutoDiscovery:
                 mcp_process.kill()
                 mcp_process.wait()
             
-            self.ensure_no_api_running()
+            self.ensure_no_api_running(server_manager)
 
     @pytest.mark.asyncio
-    async def test_recovery_after_api_crash(self, mcp_server_path):
+    async def test_recovery_after_api_crash(self, server_manager, mcp_server_path):
         """Test recovery when API process crashes."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Start MCP server with auto-start - use test's unique port
-        test_port = self.server_manager.port
+        test_port = server_manager.port
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
@@ -426,7 +428,7 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
+                if await self.is_api_running(server_manager):
                     api_started = True
                     break
             
@@ -437,7 +439,7 @@ class TestMCPAutoDiscovery:
             await asyncio.sleep(1)
             
             # Verify API is down
-            assert not await self.is_api_running(), "API should be down after simulated crash"
+            assert not await self.is_api_running(server_manager), "API should be down after simulated crash"
             
             # Start a new MCP server - should be able to start new API
             new_mcp_process = subprocess.Popen([
@@ -447,7 +449,7 @@ class TestMCPAutoDiscovery:
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
-            env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+            env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
             )
             
             try:
@@ -455,7 +457,7 @@ class TestMCPAutoDiscovery:
                 api_recovered = False
                 for attempt in range(30):
                     await asyncio.sleep(0.5)
-                    if await self.is_api_running():
+                    if await self.is_api_running(server_manager):
                         api_recovered = True
                         break
                 
@@ -471,10 +473,10 @@ class TestMCPAutoDiscovery:
                 mcp_process.terminate()
                 mcp_process.wait()
             
-            self.ensure_no_api_running()
+            self.ensure_no_api_running(server_manager)
 
     @pytest.mark.asyncio
-    async def test_unit_auto_discovery_logic(self):
+    async def test_unit_auto_discovery_logic(self, server_manager):
         """Unit test the auto-discovery logic without subprocess."""
         # This tests the core ensure_api_available logic
         import sys
@@ -496,9 +498,9 @@ class TestMCPAutoDiscovery:
         assert port == 6969, "Should parse port correctly"
 
     @pytest.mark.asyncio
-    async def test_api_functionality_with_http_client(self, mcp_server_path):
+    async def test_api_functionality_with_http_client(self, server_manager, mcp_server_path):
         """Test API functionality using Python HTTP client like a real client."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Start MCP server process
         mcp_process = subprocess.Popen([
@@ -508,7 +510,7 @@ class TestMCPAutoDiscovery:
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+        env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
         )
         
         try:
@@ -516,7 +518,7 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
+                if await self.is_api_running(server_manager):
                     api_started = True
                     break
             
@@ -525,15 +527,15 @@ class TestMCPAutoDiscovery:
             # Test various endpoints with HTTP client
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test unauthenticated health endpoint
-                response = await client.get(f"http://localhost:{self.server_manager.port}/health")
+                response = await client.get(f"http://localhost:{server_manager.port}/health")
                 assert response.status_code == 200, f"health endpoint should return 200, got {response.status_code}"
                 
                 # Test authenticated endpoints with API key
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 authenticated_endpoints = [
-                    ("context", f"http://localhost:{self.server_manager.port}/api/v1/context"),
-                    ("agents", f"http://localhost:{self.server_manager.port}/api/v1/agents"),
+                    ("context", f"http://localhost:{server_manager.port}/api/v1/context"),
+                    ("agents", f"http://localhost:{server_manager.port}/api/v1/agents"),
                 ]
                 
                 for test_name, url in authenticated_endpoints:
@@ -544,18 +546,18 @@ class TestMCPAutoDiscovery:
             if mcp_process.poll() is None:
                 mcp_process.terminate()
                 mcp_process.wait()
-            self.ensure_no_api_running()
+            self.ensure_no_api_running(server_manager)
 
     @pytest.mark.asyncio
-    async def test_multiple_mcp_clients_scenario(self, mcp_server_path):
+    async def test_multiple_mcp_clients_scenario(self, server_manager, mcp_server_path):
         """Test multiple MCP clients connecting to same API instance.
         
         This test is now robust to existing servers and properly cleans up.
         """
         # Use our robust test helper
-        async with self.server_manager.test_context():
+        async with server_manager.test_context():
             # Check if there's already an API running
-            api_was_running = await self.server_manager.is_api_running()
+            api_was_running = await server_manager.is_api_running()
             
             if api_was_running:
                 # Test coordination with existing API
@@ -563,15 +565,15 @@ class TestMCPAutoDiscovery:
                 
                 # Start first MCP client (should connect to existing)
                 print("Starting first MCP client...")
-                mcp1_process = self.server_manager.start_mcp_client()
+                mcp1_process = server_manager.start_mcp_client()
                 
                 # API should still be running
-                assert await self.server_manager.is_api_running(), "API should still be running"
+                assert await server_manager.is_api_running(), "API should still be running"
                 print("✓ First client connected to existing API")
             else:
                 # Use test's unique port for isolation
-                test_port = self.server_manager.port
-                self.server_manager = ServerManager(port=test_port)
+                test_port = server_manager.port
+                server_manager = ServerManager(port=test_port)
                 print(f"Testing multi-client coordination on port {test_port}")
                 
                 # Start first MCP client (should start API)
@@ -586,7 +588,7 @@ class TestMCPAutoDiscovery:
                 cwd=Path(__file__).parent.parent,  # Project root
                 env={**os.environ, "SERVICE_PORT": str(test_port)}
                 )
-                self.server_manager.started_processes.append(mcp1_process)
+                server_manager.started_processes.append(mcp1_process)
                 
                 # Wait for API to start
                 api_started = False
@@ -606,19 +608,19 @@ class TestMCPAutoDiscovery:
             
             # Start second MCP client (should connect to existing API)
             print("Starting second MCP client...")
-            mcp2_process = self.server_manager.start_mcp_client()
+            mcp2_process = server_manager.start_mcp_client()
             
             # API should still be running
-            assert await self.server_manager.is_api_running(), "API should still be running with two clients"
+            assert await server_manager.is_api_running(), "API should still be running with two clients"
             print("✓ Two clients connected")
             
             # Terminate first client
             print("Terminating first client...")
-            self.server_manager.cleanup_process(mcp1_process)
+            server_manager.cleanup_process(mcp1_process)
             await asyncio.sleep(5)  # Give more time for coordination to handle client exit
             
             # API should still be running (second client active)
-            still_running = await self.server_manager.is_api_running()
+            still_running = await server_manager.is_api_running()
             if not still_running:
                 # Get debug info
                 stderr2 = mcp2_process.stderr.read() if mcp2_process.stderr else "No stderr"
@@ -630,9 +632,9 @@ class TestMCPAutoDiscovery:
             # Cleanup second client happens in context manager
 
     @pytest.mark.asyncio
-    async def test_api_endpoint_comprehensive_functionality(self, mcp_server_path):
+    async def test_api_endpoint_comprehensive_functionality(self, server_manager, mcp_server_path):
         """Test comprehensive API functionality once launched by MCP server."""
-        self.ensure_no_api_running()
+        self.ensure_no_api_running(server_manager)
         
         # Start MCP server
         mcp_process = subprocess.Popen([
@@ -642,7 +644,7 @@ class TestMCPAutoDiscovery:
         stderr=subprocess.PIPE,
         text=True,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(self.server_manager.port)}
+        env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
         )
         
         try:
@@ -650,7 +652,7 @@ class TestMCPAutoDiscovery:
             api_started = False
             for attempt in range(30):
                 await asyncio.sleep(0.5)
-                if await self.is_api_running():
+                if await self.is_api_running(server_manager):
                     api_started = True
                     break
             
@@ -659,7 +661,7 @@ class TestMCPAutoDiscovery:
             # Test comprehensive API functionality
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Test health endpoint (no auth required)
-                response = await client.get(f"http://localhost:{self.server_manager.port}/health")
+                response = await client.get(f"http://localhost:{server_manager.port}/health")
                 assert response.status_code == 200
                 health_data = response.json()
                 assert "status" in health_data
@@ -668,7 +670,7 @@ class TestMCPAutoDiscovery:
                 headers = {"X-API-Key": "XXXXXX"}
                 
                 # Test context endpoint (auth required)
-                response = await client.get(f"http://localhost:{self.server_manager.port}/api/v1/context", headers=headers)
+                response = await client.get(f"http://localhost:{server_manager.port}/api/v1/context", headers=headers)
                 assert response.status_code == 200
                 context_data = response.json()
                 assert "project_name" in context_data or "name" in context_data
@@ -676,7 +678,7 @@ class TestMCPAutoDiscovery:
                 # Skip docs endpoint test - not critical for MCP auto-discovery validation
                 
                 # Test that agents endpoint exists (auth required)
-                response = await client.get(f"http://localhost:{self.server_manager.port}/api/v1/agents", headers=headers)
+                response = await client.get(f"http://localhost:{server_manager.port}/api/v1/agents", headers=headers)
                 assert response.status_code == 200
                 agents_data = response.json()
                 assert isinstance(agents_data, list)  # Should return list of agents
@@ -685,10 +687,10 @@ class TestMCPAutoDiscovery:
             if mcp_process.poll() is None:
                 mcp_process.terminate()
                 mcp_process.wait()
-            self.ensure_no_api_running()
+            self.ensure_no_api_running(server_manager)
 
     @pytest.mark.asyncio
-    async def test_service_port_consistency(self):
+    async def test_service_port_consistency(self, server_manager):
         """Test that SERVICE_PORT environment variable is respected consistently."""
         # Test default port
         server_default = HeadlessPMMCPServer()

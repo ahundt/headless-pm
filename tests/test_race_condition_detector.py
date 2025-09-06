@@ -87,7 +87,11 @@ class RaceConditionDetector:
     def start_mcp_client(self, client_id: str, capture_output: bool = True) -> subprocess.Popen:
         """Start an MCP client and track it."""
         import sys
-        env = {**os.environ, "SERVICE_PORT": str(self.test_port)}
+        env = {
+            **os.environ, 
+            "SERVICE_PORT": str(self.test_port),
+            "HEADLESS_PM_COMMAND": f"{sys.executable} -m src.main"
+        }
         
         if capture_output:
             proc = subprocess.Popen(

@@ -48,9 +48,9 @@ logger = logging.getLogger("headless-pm-mcp")
 
 # Import atomic file operations utility (handle both relative and absolute imports)
 try:
-    from ..utils.atomic_file_ops import AtomicFileOperations, ProcessCoordinationLock, with_coordination_lock
+    from ..utils.atomic_file_ops import AtomicFileOperations, with_coordination_lock
 except ImportError:
-    from src.utils.atomic_file_ops import AtomicFileOperations, ProcessCoordinationLock, with_coordination_lock
+    from src.utils.atomic_file_ops import AtomicFileOperations, with_coordination_lock
 
 # Optional psutil import for process management (graceful fallback if missing)
 try:

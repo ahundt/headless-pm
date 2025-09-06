@@ -459,35 +459,44 @@ class TestForkBombPrevention:
                     assert time_diff > 1.0  # Should detect mismatch
 
     def test_cross_platform_file_locking(self):
-        """Test cross-platform file locking mechanisms."""
-        from src.mcp.server import _lock_file, _unlock_file
+        """Test cross-platform file locking mechanisms using fasteners."""
+        from src.utils.atomic_file_ops import with_coordination_lock
         
-        # Test file locking with temporary file
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
-            self.temp_files.append(Path(temp_file.name))
+        # Test fasteners-based coordination lock 
+        def test_operation():
+            return "success"
             
-            # Test locking doesn't raise exceptions
-            try:
-                _lock_file(temp_file)
-                _unlock_file(temp_file)
-                # Should complete without error
-                assert True
-            except Exception as e:
-                # If locking fails, it should fail gracefully
-                assert "timeout" in str(e).lower() or "not supported" in str(e).lower()
+        # Test locking doesn't raise exceptions
+        try:
+            result = with_coordination_lock("test_lock", test_operation, timeout=5)
+            assert result == "success"
+        except Exception as e:
+            # If locking fails, it should fail gracefully
+            assert "timeout" in str(e).lower() or "not supported" in str(e).lower()
 
     def test_windows_file_locking_timeout(self):
-        """Test that Windows file locking has timeout protection."""
-        from src.mcp.server import _lock_file
+        """Test that fasteners file locking provides proper coordination."""
+        from src.utils.atomic_file_ops import with_coordination_lock
+        import fasteners
+        import tempfile
+        from pathlib import Path
         
-        # Test timeout mechanism exists in the code by inspecting source
-        import inspect
-        source = inspect.getsource(_lock_file)
+        # Test that fasteners InterProcessLock works properly for coordination
+        lock_path = Path(tempfile.gettempdir()) / "test_coordination_lock.lock"
         
-        # Verify timeout protection exists in implementation
-        assert "max_retries" in source
-        assert "TimeoutError" in source
-        assert "Failed to acquire file lock after" in source
+        def test_operation():
+            return "success"
+        
+        # Test normal operation
+        result1 = with_coordination_lock("test_coordination_lock", test_operation)
+        assert result1 == "success"
+        
+        # Test that exception handling returns None
+        def failing_operation():
+            raise ValueError("Test exception")
+            
+        result2 = with_coordination_lock("test_coordination_lock", failing_operation)
+        assert result2 is None
 
     @pytest.mark.asyncio
     async def test_graceful_failure_handling(self):
