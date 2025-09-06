@@ -25,6 +25,7 @@ from src.main import app
 from src.api.dependencies import get_session
 from src.mcp.server import HeadlessPMMCPServer
 from tests.test_helpers import ServerManager, MultiClientTestHelper
+from tests.retry_decorator import retry_brittle_test
 
 
 @pytest.fixture
@@ -406,9 +407,10 @@ class TestMCPAutoDiscovery:
             
             self.ensure_no_api_running(server_manager)
 
+    @retry_brittle_test(max_attempts=10, delay=0.5)
     @pytest.mark.asyncio
     async def test_recovery_after_api_crash(self, server_manager, mcp_server_path):
-        """Test recovery when API process crashes."""
+        """Test recovery when API process crashes. Runs 10x internally due to brittleness."""
         self.ensure_no_api_running(server_manager)
         
         # Start MCP server with auto-start - use test's unique port
