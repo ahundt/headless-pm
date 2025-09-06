@@ -26,6 +26,7 @@ from src.api.dependencies import get_session
 from src.mcp.server import HeadlessPMMCPServer
 from tests.test_helpers import ServerManager, MultiClientTestHelper
 from tests.retry_decorator import retry_brittle_test
+from tests.resource_leak_detector import capture_system_state, log_mcp_server_failure_context
 
 
 @pytest.fixture
@@ -637,6 +638,37 @@ class TestMCPAutoDiscovery:
     @pytest.mark.asyncio
     async def test_api_endpoint_comprehensive_functionality(self, server_manager, mcp_server_path):
         """Test comprehensive API functionality once launched by MCP server. Runs 10x internally due to brittleness."""
+        
+        # AGGRESSIVE PRE-TEST CLEANUP - Kill all lingering API servers and MCP processes
+        print(f"\n[CLEANUP] Aggressive process cleanup before test on port {server_manager.port}")
+        import psutil, signal
+        killed_count = 0
+        for proc in psutil.process_iter(['pid', 'cmdline', 'name']):
+            try:
+                cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
+                name = proc.info['name'] or ''
+                
+                # Kill any API servers, MCP servers, or src.main processes (except our own test)
+                if any(keyword in cmdline.lower() or keyword in name.lower() for keyword in [
+                    'uvicorn', 'src.main', 'src.mcp.server'
+                ]) and proc.pid != os.getpid():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=3)
+                        killed_count += 1
+                    except (psutil.TimeoutExpired, psutil.NoSuchProcess, psutil.AccessDenied):
+                        try:
+                            proc.kill()
+                            killed_count += 1
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        if killed_count > 0:
+            print(f"[CLEANUP] Terminated {killed_count} lingering processes")
+            await asyncio.sleep(2)  # Wait for cleanup
+        
         self.ensure_no_api_running(server_manager)
         
         # Start MCP server
@@ -659,6 +691,21 @@ class TestMCPAutoDiscovery:
                     api_started = True
                     break
             
+            if not api_started:
+                # Log concrete failure context before assertion
+                context = log_mcp_server_failure_context(server_manager)
+                print(context)
+                
+                # Capture MCP server output for debugging
+                try:
+                    if mcp_process.poll() is not None:
+                        stdout, stderr = mcp_process.communicate(timeout=2)
+                        print(f"\nMCP SERVER OUTPUT:")
+                        print(f"STDOUT: {stdout[-500:] if stdout else 'None'}")
+                        print(f"STDERR: {stderr[-500:] if stderr else 'None'}")
+                except Exception as e:
+                    print(f"Could not capture MCP output: {e}")
+                
             assert api_started, "API should have started"
             
             # Test comprehensive API functionality
