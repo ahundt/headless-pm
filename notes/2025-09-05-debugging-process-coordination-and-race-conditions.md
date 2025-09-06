@@ -365,6 +365,59 @@ for i in {1..5}; do echo "=== FINAL VALIDATION RUN $i of 5 ==="; python -m pytes
     *   **Good Example:** `fix(mcp, tests): correct rate-limit logic and enforce explicit command in race test`
 3.  Update this document. Delete this entire Action Plan (Part 4) and replace it with a concise "Resolution Summary" section, preserving the rest of the document as a historical and architectural guide.
 
+---
+
+### **Part 5: Deep Dive into Inter-Process Coordination**
+
+#### 5.1 Re-evaluation of `ProcessCoordinationLock`
+
+Upon deeper analysis, the custom `ProcessCoordinationLock` in `src/utils/atomic_file_ops.py`, while attempting to be robust, contained a critical race condition in its stale-lock cleanup mechanism.
+
+**Original Flaw:**
+The `acquire` method's logic for handling `FileExistsError` (when a lock file already exists) would check if the lock was stale (e.g., held by a dead process) and then attempt to `os.unlink()` it. This `unlink` operation, however, was not atomic with respect to other processes also attempting to acquire or clean up the lock. This could lead to scenarios where:
+1.  Process A identifies a lock as stale and deletes it.
+2.  Process B, concurrently, also identifies the same lock as stale and attempts to delete it, or even worse, attempts to acquire it just after Process A deletes it but before Process A can re-acquire it.
+This race condition could lead to the lock being incorrectly acquired by multiple processes, or to a state where no process could reliably acquire the lock, thus breaking the fundamental serialization guarantee.
+
+#### 5.2 Assessment of Alternative Python File Locking Libraries
+
+To address this fundamental flaw, a comprehensive review of established, battle-tested Python libraries for cross-platform inter-process file locking was conducted.
+
+**Candidates Reviewed:**
+
+1.  **Fasteners**:
+    *   **Pros**: Uses OS-native locking mechanisms (`fcntl` for POSIX, `LockFileEx`/`_locking` for Windows), which are inherently robust. Crucially, it supports **automatic lock release on process crash**, a vital feature for preventing deadlocks in inter-process communication. It extends standard Python synchronization primitives.
+    *   **Cons**: May introduce `pywin32` dependency on Windows.
+    *   **Relevance**: Its automatic crash recovery and use of native OS calls make it highly suitable.
+
+2.  **FileLock**:
+    *   **Pros**: Simple API, highly cross-platform by creating a separate `.lock` file. Well-maintained and widely used.
+    *   **Cons**: While robust, its `.lock` file approach is less "native" than `Fasteners`'s use of OS-level calls. It does not inherently offer automatic crash recovery for locks.
+    *   **Relevance**: A strong alternative, but `Fasteners` offers superior crash handling.
+
+3.  **Portalocker**:
+    *   **Pros**: Straightforward API, cross-platform.
+    *   **Cons**: Less prominent for simple file locking compared to the others. Distributed locking feature is not relevant for this problem.
+    *   **Relevance**: A viable option, but less compelling for this specific use case.
+
+#### 5.3 Decision and Justification (Aligned with `CLAUDE.md` Philosophy)
+
+**Decision**: The custom `ProcessCoordinationLock` will be replaced with the `Fasteners` library.
+
+**Justification (Aligned with `CLAUDE.md` Principles):**
+
+*   **CORE PRINCIPLES**:
+    *   **1. Automatic and Correct**: `Fasteners`'s automatic lock release on crash directly contributes to a more "automatic and correct" system by preventing deadlocks caused by crashed processes.
+    *   **5. Use Existing APIs and Capabilities**: It leverages robust, OS-native file locking APIs (`fcntl`, `msvcrt`) rather than a custom, potentially flawed implementation. This aligns with using established, reliable solutions.
+
+*   **TECHNICAL PRINCIPLES**:
+    *   **10. Graceful Recovery**: Its core feature of automatic lock release on crash is a direct embodiment of graceful recovery, ensuring resources are not held indefinitely.
+    *   **11. Trust the Systems**: It trusts the underlying operating system's locking mechanisms, which are battle-tested and optimized.
+    *   **13. One Problem, One Solution**: It provides a dedicated, tested, and comprehensive solution for file locking, avoiding a custom, potentially buggy implementation.
+
+*   **OPTIMIZATION PRINCIPLES**:
+    *   **16. Optimize for Common Case**: `Fasteners` provides a robust solution for the common case of inter-process file locking, ensuring reliability without over-engineering.
+
 
 
 ## **Failure Theories and Action Plan to work towards 100% Test Reliability**
@@ -526,30 +579,36 @@ This section breaks down each of the known failures into a set of testable hypot
 This is the complete, well-organized list of all outstanding issues, structured as a diagnostic decision tree and incorporating test hardening.
 
 *   [ ] **Task 1: Resolve Intermittent Failure (`test_api_functionality_with_http_client`)**
-    *   [ ] **1.1 - Instrument:** Add the aggressive "pre-flight check" logic to the `setup_method` in `tests/test_mcp_autodiscovery.py`.
-    *   [ ] **1.2 - Execute & Analyze:** Run the full test suite (`python -m pytest tests/ --tb=short`) at least 3 times.
+    *   [x] **1.1 - Instrument:** Add the aggressive "pre-flight check" logic to the `setup_method` in `tests/test_mcp_autodiscovery.py`.
+    *   [x] **1.2 - Execute & Analyze:** Run the full test suite (`python -m pytest tests/ --tb=short`) at least 3 times.
         *   **IF** a `PRE-FLIGHT CHECK FAILED` error occurs, note the port and the test that failed. The bug is in the `teardown_method` of the *previous* test. Go to **Task 1.3**.
         *   **ELSE IF** the checks pass but the intermittent failure still occurs, the theory is wrong. Go to **Task 1.4**.
-    *   [ ] **1.3 - Fix Leaking Test:** Find the test that ran immediately before the failure and improve its `teardown_method` to more aggressively kill all subprocesses (e.g., using `psutil` to find and kill child processes).
+    *   [x] **1.3 - Fix Leaking Test:** Find the test that ran immediately before the failure and improve its `teardown_method` to more aggressively kill all subprocesses (e.g., using `psutil` to find and kill child processes).
     *   [ ] **1.4 - Investigate Deeper:** If cleanup is not the issue, apply the high-granularity logging from Task 3 to this test's execution to trace its interaction with the coordination file.
-    *   [ ] **1.5 - Cleanup:** Once resolved, remove the verbose `print` statements from the pre-flight check but **keep the checks themselves** as permanent assertions to prevent future regressions.
+    *   [x] **1.5 - Cleanup:** Once resolved, remove the verbose `print` statements from the pre-flight check but **keep the checks themselves** as permanent assertions to prevent future regressions.
 
-*   [ ] **Task 2: Resolve Rate-Limiting Failure (`test_rate_limiting_protection`)**
-    *   [ ] **2.1 - Instrument:** Add the diagnostic `print` statement to `_get_mcp_coordination_file` in `src/mcp/server.py`.
-    *   [ ] **2.2 - Execute & Analyze:** Run the failing test with `-s`.
+*   [ ] **Task 1A: Fix Stale API PID Handling in Crash Recovery**
+    *   [ ] **1A.1 - Instrument `ensure_api_available`**: Add logging to `src/mcp/server.py` to print the contents of the coordination file and check if the `api_pid` in the file is a live process before attempting to connect.
+    *   [ ] **1A.2 - Implement Stale PID Cleanup**: Modify `ensure_api_available` to check if the `api_pid` from the coordination file is alive using `psutil.pid_exists()`. If it's not alive, it should delete the stale `api_pid` from the file and proceed as if no API was running.
+    *   [ ] **1A.3 - Validate with `test_recovery_after_api_crash`**: Run the specific failing test to confirm the fix.
+    *   [ ] **1A.4 - Full Validation**: Run the 5-run validation loop.
+
+*   [x] **Task 2: Resolve Rate-Limiting Failure (`test_rate_limiting_protection`)**
+    *   [x] **2.1 - Instrument:** Add the diagnostic `print` statement to `_get_mcp_coordination_file` in `src/mcp/server.py`.
+    *   [x] **2.2 - Execute & Analyze:** Run the failing test with `-s`.
         *   **IF** you see multiple, different temporary file paths, the "Flawed Test Setup" theory is **CONFIRMED**. Go to **Task 2.3**.
         *   **ELSE IF** you see the same file path logged four times, the theory is **DISPROVEN**. The bug is in the application logic. Go to **Task 2.4**.
-    *   [ ] **2.3 - Fix Test Setup:** Modify `tests/test_fork_bomb_prevention.py` to create a *single* `HeadlessPMMCPServer` instance in the test's `setup_method` and reuse that instance for all four calls.
-    *   [ ] **2.4 - Fix Application Logic:** Implement the robust, corrected rate-limiting logic from the previous version of this guide, which uses a clear signaling mechanism.
-    *   [ ] **2.5 - Harden the Test:** Modify `test_rate_limiting_protection` to run its sequence of four calls inside a `for _ in range(20):` loop to ensure the state resets correctly and the logic is sound over multiple cycles.
-    *   [ ] **2.6 - Cleanup:** Remove the diagnostic `print` statement.
+    *   [x] **2.3 - Fix Test Setup:** Modify `tests/test_fork_bomb_prevention.py` to create a *single* `HeadlessPMMCPServer` instance in the test's `setup_method` and reuse that instance for all four calls.
+    *   [x] **2.4 - Fix Application Logic:** Implement the robust, corrected rate-limiting logic from the previous version of this guide, which uses a clear signaling mechanism.
+    *   [x] **2.5 - Harden the Test:** Modify `test_rate_limiting_protection` to run its sequence of four calls inside a `for _ in range(20):` loop to ensure the state resets correctly and the logic is sound over multiple cycles.
+    *   [x] **2.6 - Cleanup:** Remove the diagnostic `print` statement.
 
-*   [ ] **Task 3: Resolve High-Contention Failure (`test_coordination_file_atomicity`)**
-    *   [ ] **3.1 - Instrument:** Add the high-granularity, process-aware logging to the `atomic_json_update` function in `src/utils/atomic_file_ops.py`.
-    *   [ ] **3.2 - Execute & Analyze:** Clear the trace log, run the failing test, and then analyze the trace to find the logical error in the state transitions.
-    *   [ ] **3.3 - Implement Fix:** Based on the trace, correct the logical flaw in the `_register_mcp_client` or related functions in `src/mcp/server.py`.
-    *   [ ] **3.4 - Harden the Test:** After the test passes with N=3 clients, modify the `NUMBER_OF_CLIENTS` constant in the test file to `5` and then `10`. The test must continue to pass. This validates that the fix is robust and scales. Revert to `3` for normal CI runs.
-    *   [ ] **3.5 - Cleanup:** Remove the diagnostic logging from the atomic utility.
+*   [x] **Task 3: Resolve High-Contention Failure (`test_coordination_file_atomicity`)**
+    *   [x] **3.1 - Instrument:** Add the high-granularity, process-aware logging to the `atomic_json_update` function in `src/utils/atomic_file_ops.py`.
+    *   [x] **3.2 - Execute & Analyze:** Clear the trace log, run the failing test, and then analyze the trace to find the logical error in the state transitions.
+    *   [x] **3.3 - Implement Fix:** Based on the trace, correct the logical flaw in the `_register_mcp_client` or related functions in `src/mcp/server.py`.
+    *   [x] **3.4 - Harden the Test:** After the test passes with N=3 clients, modify the `NUMBER_OF_CLIENTS` constant in the test file to `5` and then `10`. The test must continue to pass. This validates that the fix is robust and scales. Revert to `3` for normal CI runs.
+    *   [x] **3.5 - Cleanup:** Remove the diagnostic logging from the atomic utility.
 
 *   [ ] **Task 4: Final End-to-End Validation**
     *   [ ] **4.1 - Consistency Check:** Execute the 5-run validation loop: `for i in {1..5}; do ...; done`.

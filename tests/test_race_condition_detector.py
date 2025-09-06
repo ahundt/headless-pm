@@ -583,7 +583,7 @@ class TestRaceConditionDetector:
             
             # Check final coordination state
             coord_data = detector.read_coordination_file()
-            api_running = await self.is_api_running()
+            api_running = await detector.is_api_running()
             
             expected_clients = 3
             actual_clients = len(coord_data.get("clients", [])) if coord_data else 0

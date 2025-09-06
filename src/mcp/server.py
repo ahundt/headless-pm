@@ -117,32 +117,6 @@ except ImportError:
 # Note: Rate limiting now uses file-based coordination only (no global state)
 
 
-def _lock_file(f):
-    """Cross-platform file locking."""
-    if HAS_FCNTL:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-    elif HAS_MSVCRT:
-        # Windows locking with msvcrt - with timeout to prevent infinite loop
-        max_retries = 50  # 5 seconds max
-        for attempt in range(max_retries):
-            try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                break
-            except IOError:
-                if attempt == max_retries - 1:
-                    raise TimeoutError("Failed to acquire file lock after 5 seconds")
-                time.sleep(0.1)
-    # If no locking available, proceed without locking (less robust but functional)
-
-
-def _unlock_file(f):
-    """Cross-platform file unlocking."""
-    if HAS_FCNTL:
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    elif HAS_MSVCRT:
-        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-
-
 class HeadlessPMMCPServer:
     """MCP Server for Headless PM integration."""
 
@@ -271,6 +245,19 @@ class HeadlessPMMCPServer:
         parsed = urllib.parse.urlparse(self.base_url)
         port = parsed.port or 6969
 
+        # Pre-emptive stale API PID check
+        coordination_file = self._get_mcp_coordination_file()
+        if coordination_file.exists():
+            def clean_stale_api_pid(data: Dict) -> Dict:
+                api_pid = data.get('api_pid')
+                if api_pid and HAS_PSUTIL and not psutil.pid_exists(api_pid):
+                    logger.warning(f"Found stale API PID {api_pid} in coordination file. Cleaning up.")
+                    del data['api_pid']
+                return data
+            try:
+                AtomicFileOperations.atomic_json_update(coordination_file, clean_stale_api_pid, {})
+            except Exception as e:
+                logger.warning(f"Could not perform pre-emptive stale PID check: {e}")
 
         # Register this MCP client for coordination
         should_start_api = self._register_mcp_client()
@@ -682,60 +669,64 @@ class HeadlessPMMCPServer:
             return False  # Default to not cleaning up if coordination fails
 
     async def _check_startup_rate_limit(self, port: int) -> bool:
-        """Check startup rate limit using atomic file operations for consistency."""
+        """
+        Check startup rate limit using atomic file operations for consistency.
+        Allows 3 startups within a 5-second window. The 4th is blocked.
+        """
         coordination_file = self._get_mcp_coordination_file()
         now = time.time()
-        
-        def update_rate_limit_data(data: Dict) -> Dict:
-            """Update rate limiting data atomically."""
-            # Initialize rate limits structure
+
+        def update_and_check_rate_limit(data: Dict) -> Dict:
+            """Atomically checks and updates rate limiting data."""
             if 'rate_limits' not in data:
                 data['rate_limits'] = {}
-            
-            # Check rate limiting data
+
             port_key = str(port)
             rate_data = data['rate_limits'].get(port_key, {'attempts': []})
-            
-            # Clean up old attempts (older than 5 minutes)
-            cutoff = now - 300
-            rate_data['attempts'] = [attempt for attempt in rate_data['attempts'] if attempt > cutoff]
-            
-            # Check if rate limit exceeded (need 4+ attempts, so block starting from 4th)
-            recent_attempts = [attempt for attempt in rate_data['attempts'] if now - attempt < 5.0]
-            if len(recent_attempts) >= 3:  # This will be the 4th attempt
-                logger.warning(f"Rate limit exceeded for port {port}: {len(recent_attempts) + 1} attempts in 5 seconds")
-                # Don't update data, just return current state
+
+            # 1. Prune old timestamps (older than 5 minutes) to prevent the file from growing indefinitely.
+            five_minutes_ago = now - 300
+            rate_data['attempts'] = [t for t in rate_data['attempts'] if t > five_minutes_ago]
+
+            # 2. Check the condition BEFORE adding the new attempt.
+            five_seconds_ago = now - 5.0
+            recent_attempts = [t for t in rate_data['attempts'] if t > five_seconds_ago]
+
+            # 3. The core logic: If 3 or more attempts are already logged, this new one is the 4th (or more), which should be blocked.
+            if len(recent_attempts) >= 3:
+                logger.warning(
+                    f"Rate limit exceeded for port {port}: Found {len(recent_attempts)} attempts in the last 5 seconds. Blocking new attempt."
+                )
+                # Use a signal key to inform the outer scope that a block occurred.
+                data['rate_limit_blocked_port'] = port_key
+                # Return the data WITHOUT adding the new attempt.
                 return data
-            
-            # Record this attempt
+
+            # 4. If not blocked, record this new attempt.
             rate_data['attempts'].append(now)
-            
-            # Ensure rate_limits structure exists
-            if 'rate_limits' not in data:
-                data['rate_limits'] = {}
             data['rate_limits'][port_key] = rate_data
-            
+
+            # 5. Ensure the signal key is not present if we are not blocking.
+            if 'rate_limit_blocked_port' in data:
+                del data['rate_limit_blocked_port']
+
             return data
-        
+
         try:
-            # Use atomic file operations for cross-platform consistency
-            result_data = AtomicFileOperations.atomic_json_update(
-                coordination_file, update_rate_limit_data, {}
+            # Execute the atomic update
+            final_data = AtomicFileOperations.atomic_json_update(
+                coordination_file, update_and_check_rate_limit, {}
             )
-            
-            # Check if rate limit was exceeded
-            port_key = str(port)
-            if 'rate_limits' in result_data and port_key in result_data['rate_limits']:
-                rate_data = result_data['rate_limits'][port_key]
-                recent_attempts = [attempt for attempt in rate_data['attempts'] if now - attempt < 5.0]
-                if len(recent_attempts) >= 3:
-                    return False
-            
-            return True
-            
+
+            # Check if the signal key was set by the update function
+            if final_data.get('rate_limit_blocked_port') == str(port):
+                return False  # Startup is NOT allowed
+
+            return True  # Startup is allowed
+
         except Exception as e:
-            logger.warning(f"Rate limit check failed: {e} - allowing startup")
-            return True  # Fail open for availability
+            logger.warning(f"Rate limit check failed with exception: {e} - allowing startup as a failsafe.")
+            return True
 
     def _get_venv_commands(self) -> List[List[str]]:
         """Get virtual environment commands to try."""

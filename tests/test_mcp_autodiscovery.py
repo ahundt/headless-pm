@@ -82,12 +82,43 @@ class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
 
     def setup_method(self, method):
-        """Setup test method with unique port for isolation."""
-        # Use method name hash to get consistent but unique port per test
-        import hashlib
+        """Setup test method with unique port and aggressive pre-flight checks."""
+        import hashlib, subprocess, os, pytest
         method_hash = abs(hash(f"{self.__class__.__name__}::{method.__name__}")) % 1000
-        unique_port = 9000 + method_hash  # Port range 9000-9999
+        unique_port = 9000 + method_hash
+
+        # --- AGGRESSIVE PRE-FLIGHT CHECK ---
+        print(f"\n[SETUP {method.__name__}]: Using port {unique_port}. Verifying clean state...")
+        try:
+            # Check 1: Is a process listening on the target port?
+            # The `lsof` command is specific to Unix-like systems. A cross-platform
+            # solution would use `psutil`, but for this diagnostic, `lsof` is sufficient.
+            lsof_command = f"lsof -i :{unique_port}"
+            result = subprocess.run(lsof_command, shell=True, check=False, capture_output=True)
+            if result.returncode == 0: # A return code of 0 means a process was found
+                pytest.fail(
+                    f"PRE-FLIGHT CHECK FAILED: Port {unique_port} is already in use before test start.\n"
+                    f"Leaking process info:\n{result.stdout.decode()}",
+                    pytrace=False
+                )
+            print(f"[SETUP {method.__name__}]: Port {unique_port} is confirmed free.")
+        except Exception as e:
+            # Handle cases where lsof is not available, though it shouldn't happen in the test env.
+            print(f"Warning: lsof command failed during pre-flight check: {e}")
+
+        # Check 2: Does a stale coordination file exist?
+        coord_file = "/tmp/headless_pm_mcp_coordination.json"
+        if os.path.exists(coord_file):
+            os.remove(coord_file)
+            print(f"[SETUP {method.__name__}]: Removed stale coordination file.")
+
         self.server_manager = ServerManager(port=unique_port)
+
+    async def teardown_method(self, method):
+        """Ensure all processes are cleaned up after each test."""
+        print(f"\n[TEARDOWN {method.__name__}]: Cleaning up server manager processes...")
+        if hasattr(self, 'server_manager'):
+            await self.server_manager.cleanup()
         
     async def is_api_running(self, base_url: str = None) -> bool:
         """Check if API is responding."""
@@ -245,7 +276,8 @@ class TestMCPAutoDiscovery:
                 api_process.terminate()
                 api_process.wait()
 
-    def test_command_discovery(self, mcp_server_path):
+    @pytest.mark.asyncio
+    async def test_command_discovery(self, mcp_server_path):
         """Test that MCP server can find headless-pm command."""
         # This is a unit test of the command discovery logic
         import sys
@@ -441,7 +473,8 @@ class TestMCPAutoDiscovery:
             
             self.ensure_no_api_running()
 
-    def test_unit_auto_discovery_logic(self):
+    @pytest.mark.asyncio
+    async def test_unit_auto_discovery_logic(self):
         """Unit test the auto-discovery logic without subprocess."""
         # This tests the core ensure_api_available logic
         import sys
@@ -654,7 +687,8 @@ class TestMCPAutoDiscovery:
                 mcp_process.wait()
             self.ensure_no_api_running()
 
-    def test_service_port_consistency(self):
+    @pytest.mark.asyncio
+    async def test_service_port_consistency(self):
         """Test that SERVICE_PORT environment variable is respected consistently."""
         # Test default port
         server_default = HeadlessPMMCPServer()

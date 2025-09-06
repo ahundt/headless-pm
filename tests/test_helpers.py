@@ -20,6 +20,7 @@ class ServerManager:
         self.base_url = f"http://localhost:{port}"
         self.started_processes: List[subprocess.Popen] = []
         self.existing_api_pid: Optional[int] = None
+        self.project_root = Path(__file__).parent.parent
         
     async def is_api_running(self) -> bool:
         """Check if API is responding."""
@@ -55,16 +56,28 @@ class ServerManager:
     def start_mcp_client(self, env: dict = None, wait: bool = True) -> subprocess.Popen:
         """Start an MCP client process and track it."""
         import sys
+        import os
         
         if env is None:
             env = {}
+
+        # Add project root to PYTHONPATH to ensure modules are found by the subprocess
+        python_path = os.environ.get("PYTHONPATH", "")
+        project_root_str = str(self.project_root)
+        if project_root_str not in python_path.split(os.pathsep):
+            python_path = f"{project_root_str}{os.pathsep}{python_path}"
         
-        full_env = {**os.environ, "SERVICE_PORT": str(self.port), **env}
+        full_env = {
+            **os.environ, 
+            "SERVICE_PORT": str(self.port), 
+            "PYTHONPATH": python_path,
+            **env
+        }
         
         # MCP server expects to run as stdio server, so we need to provide stdin
         # to keep it running. We use PIPE for stdin so the process doesn't exit.
         proc = subprocess.Popen(
-            [sys.executable, "-m", "src.mcp"],
+            [sys.executable, "-m", "src.mcp.server"],
             stdin=subprocess.PIPE,  # Important: MCP server needs stdin to stay alive
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -103,7 +116,7 @@ class ServerManager:
                 pass
     
     async def cleanup(self):
-        """Clean up only what this test created."""
+        """Clean up only what this test created and wait for port release."""
         # First, terminate all MCP clients we started
         for proc in self.started_processes:
             self.cleanup_process(proc)
@@ -129,6 +142,14 @@ class ServerManager:
                 pass
         elif self.existing_api_pid and current_api_pid == self.existing_api_pid:
             print(f"Preserving pre-existing API server (PID: {self.existing_api_pid})")
+
+        # Actively wait for the port to become free
+        for i in range(10): # Wait up to 2.5 seconds
+            if not await self.is_api_running():
+                print(f"Port {self.port} confirmed free after cleanup.")
+                return
+            await asyncio.sleep(0.25)
+        print(f"Warning: Port {self.port} did not become free after cleanup.")
     
     @asynccontextmanager
     async def test_context(self):
