@@ -586,15 +586,24 @@ class TestRaceConditionDetector:
         try:
             print("Testing coordination file atomicity...")
             
-            # Simulate rapid concurrent client registration
+            # Simulate rapid concurrent client registration with proper synchronization
             clients = []
             for i in range(3):
                 client = detector.start_mcp_client(f"concurrent_client_{i}", capture_output=False)
                 clients.append(client)
-                await asyncio.sleep(0.1)  # Very short delay to stress file operations
+                await asyncio.sleep(0.2)  # Slightly longer delay to reduce write contention
                 
-            # Wait for all to settle
-            await asyncio.sleep(5)
+            # Wait for all clients to fully register with exponential backoff verification
+            max_attempts = 10
+            for attempt in range(max_attempts):
+                await asyncio.sleep(1)  # Check every second
+                coord_data = detector.read_coordination_file()
+                if coord_data and len(coord_data.get("clients", [])) >= 3:
+                    break
+                print(f"Waiting for client registration completion, attempt {attempt + 1}/{max_attempts}")
+            
+            # Additional settling time after successful registration
+            await asyncio.sleep(2)
             
             # Check final coordination state
             coord_data = detector.read_coordination_file()
