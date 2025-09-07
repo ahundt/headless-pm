@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.mcp.server import HeadlessPMMCPServer
+from tests.process_tree_leak_detective import comprehensive_leak_detection
 
 
 class TestForkBombPrevention:
@@ -50,6 +51,12 @@ class TestForkBombPrevention:
                     temp_file.unlink()
             except:
                 pass
+        
+        # Run leak detective
+        try:
+            comprehensive_leak_detection(f"TestForkBombPrevention.{self._testMethodName}")
+        except Exception as e:
+            print(f"[TEARDOWN] Leak detective failed: {e}")
 
     def test_mcp_context_detection_via_environment(self):
         """Test MCP context detection using environment variables."""

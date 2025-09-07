@@ -14,6 +14,7 @@ import psutil
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import tempfile
+from tests.process_tree_leak_detective import setup_process_tree_tracking, comprehensive_leak_detection
 
 
 class RaceConditionDetector:
@@ -491,6 +492,16 @@ class RaceConditionDetector:
 @pytest.mark.asyncio 
 class TestRaceConditionDetector:
     """Test suite for race condition detection."""
+    
+    @classmethod
+    def setup_class(cls):
+        """Class-level setup with process tree baseline."""
+        setup_process_tree_tracking()
+    
+    @classmethod
+    def teardown_class(cls):
+        """Class-level teardown with comprehensive leak detection."""
+        comprehensive_leak_detection("TestRaceConditionDetector", {8888, 8889, 8890})
     
     async def test_reliable_race_condition_detection(self):
         """Reliably detect and report coordination race conditions."""

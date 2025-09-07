@@ -27,6 +27,7 @@ from src.mcp.server import HeadlessPMMCPServer
 from tests.test_helpers import ServerManager, MultiClientTestHelper
 from tests.retry_decorator import retry_brittle_test
 from tests.resource_leak_detector import capture_system_state, log_mcp_server_failure_context
+from tests.process_tree_leak_detective import setup_process_tree_tracking, comprehensive_leak_detection
 
 
 @pytest.fixture
@@ -82,6 +83,16 @@ def mcp_server_path():
 @pytest.mark.integration
 class TestMCPAutoDiscovery:
     """Integration tests for MCP server auto-discovery functionality."""
+    
+    @classmethod
+    def setup_class(cls):
+        """Class-level setup with process tree baseline."""
+        setup_process_tree_tracking()
+    
+    @classmethod
+    def teardown_class(cls):
+        """Class-level teardown with comprehensive leak detection."""
+        comprehensive_leak_detection("TestMCPAutoDiscovery", {6969, 6968, 3001})
 
     @pytest.fixture
     async def server_manager(self, request):
@@ -648,9 +659,9 @@ class TestMCPAutoDiscovery:
                 cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
                 name = proc.info['name'] or ''
                 
-                # Kill any API servers, MCP servers, or src.main processes (except our own test)
+                # Kill any API servers, MCP servers, Next.js dashboard, or src.main processes (except our own test)
                 if any(keyword in cmdline.lower() or keyword in name.lower() for keyword in [
-                    'uvicorn', 'src.main', 'src.mcp.server'
+                    'uvicorn', 'src.main', 'src.mcp.server', 'node.*next', 'next dev', 'next start'
                 ]) and proc.pid != os.getpid():
                     try:
                         proc.terminate()

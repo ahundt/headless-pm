@@ -11,6 +11,7 @@ import time
 import subprocess
 from pathlib import Path
 from typing import Set, Dict, List, Tuple
+from tests.process_leak_detective import detect_and_cleanup_leaks
 
 
 class TestIsolationAuditor:
@@ -107,6 +108,12 @@ def audit_test_isolation(request):
 
 class TestIsolationAudit:
     """Test class to verify isolation audit functionality."""
+    
+    @classmethod
+    def teardown_class(cls):
+        """Class-level teardown with systematic process leak detection."""
+        print(f"\n[CLASS TEARDOWN] Running leak detective for TestIsolationAudit")
+        detect_and_cleanup_leaks("TestIsolationAudit")
     
     def test_baseline_capture(self):
         """Capture system baseline for audit comparisons."""

@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from headless_pm_client import HeadlessPMClient, load_env_file
 from tests.test_helpers import ServerManager
+from tests.process_leak_detective import detect_and_cleanup_leaks
 
 
 def TestableHeadlessPMClient(base_url=None, api_key=None):
@@ -239,6 +240,9 @@ class TestHeadlessPMClient(unittest.TestCase):
         # Run async cleanup in sync context
         asyncio.run(final_cleanup())
         print(f"✓ API server cleanup completed on port {cls.server_manager.port}")
+        
+        # LEAK DETECTIVE: Detect and attribute any remaining process leaks
+        detect_and_cleanup_leaks("TestHeadlessPMClient", {cls.server_manager.port})
     
     @classmethod
     def _cleanup_resource(cls, resource_type: str, resource_id: Any):
