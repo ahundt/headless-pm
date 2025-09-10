@@ -1,15 +1,15 @@
 """
-Superior Consolidated Test Diagnostics Tool - DRY Design
+Test Resource Manager - Single Source of Truth for Process and Detection Management
 
-Integrates best elements from all existing systems:
-- DeterministicPortManager (reliability_framework.py) for consistent port allocation
-- Process tree tracking (superior approach for child process detection)
-- MCP server failure diagnostics (valuable context for API startup failures)  
-- Robust process cleanup patterns (terminate-wait-kill)
-- Backwards compatible with real system defaults (6969, 6968, 3001)
+Central manager for ALL test process and resource management:
+- Process lifecycle management with robust cleanup patterns (terminate-wait-kill)
+- Comprehensive leak detection using superior process tree tracking
+- Port occupation detection for comprehensive resource monitoring
+- MCP server failure diagnostics with detailed context
+- Integration with real system port allocation (src.main.get_port)
 
 Easy to use correctly, hard to use incorrectly.
-This is the single authoritative diagnostic tool for the test suite.
+Single authoritative manager for all test resource needs.
 """
 
 import hashlib
@@ -294,8 +294,8 @@ def detect_and_cleanup_process_tree_leaks(test_name: str) -> Dict:
 
 def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
     """
-    Check specific test ports for orphaned processes using lsof.
-    More reliable than psutil on macOS and doesn't require permissions.
+    Check specific test ports for test-related orphaned processes.
+    Excludes legitimate system processes (Chrome, system services).
     """
     import subprocess
     
@@ -311,23 +311,46 @@ def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
             )
             
             if result.returncode == 0 and result.stdout.strip():
-                # Port is in use, get process details
+                # Port is in use, get process details and filter for test-related processes
                 pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
                 for pid in pids:
                     try:
                         proc = psutil.Process(pid)
-                        orphaned_ports.append({
-                            'port': port,
-                            'pid': pid,
-                            'name': proc.name(),
-                            'cmdline': ' '.join(proc.cmdline())
-                        })
+                        cmdline = ' '.join(proc.cmdline())
+                        name = proc.name()
+                        
+                        # Filter out legitimate system processes
+                        if _is_legitimate_system_process(name, cmdline):
+                            print(f"[PORT DETECTIVE] Port {port}: PID {pid} - {name} (legitimate system process, ignored)")
+                            continue
+                            
+                        # Only report test-related or potentially orphaned processes
+                        if _is_test_related_process(name, cmdline):
+                            orphaned_ports.append({
+                                'port': port,
+                                'pid': pid,
+                                'name': name,
+                                'cmdline': cmdline,
+                                'classification': 'test-related'
+                            })
+                        else:
+                            # Potentially orphaned HeadlessPM processes
+                            if any(keyword in cmdline.lower() for keyword in ['headless', 'uvicorn', 'src.main', 'next-server']):
+                                orphaned_ports.append({
+                                    'port': port,
+                                    'pid': pid,
+                                    'name': name,
+                                    'cmdline': cmdline,
+                                    'classification': 'potentially-orphaned'
+                                })
+                                
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         orphaned_ports.append({
                             'port': port,
                             'pid': pid,
                             'name': 'unknown',
-                            'cmdline': 'access denied'
+                            'cmdline': 'access denied',
+                            'classification': 'unknown'
                         })
                         
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -335,11 +358,39 @@ def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
             continue
     
     if orphaned_ports:
-        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} orphaned ports:")
+        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} potentially problematic ports:")
         for port_info in orphaned_ports:
-            print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['cmdline'][:80]}")
+            classification = port_info.get('classification', 'unknown')
+            print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['name']} ({classification})")
+            print(f"    Command: {port_info['cmdline'][:80]}")
     
     return orphaned_ports
+
+def _is_legitimate_system_process(name: str, cmdline: str) -> bool:
+    """Check if process is a legitimate system process that should not be killed."""
+    legitimate_patterns = [
+        'Google Chrome',
+        'Chrome Helper',
+        'Safari',
+        'Firefox', 
+        'PowerUIAgent',
+        '/System/',
+        '/usr/libexec/',
+        '/Applications/' # Apps running legitimately
+    ]
+    
+    return any(pattern in cmdline for pattern in legitimate_patterns)
+
+def _is_test_related_process(name: str, cmdline: str) -> bool:
+    """Check if process is clearly test-related."""
+    test_patterns = [
+        'pytest',
+        'python.*test',
+        'src.mcp.server',
+        'test_'
+    ]
+    
+    return any(pattern in cmdline.lower() for pattern in test_patterns)
 
 
 def comprehensive_leak_detection(test_name: str, test_ports: Set[int] = None) -> Dict:
