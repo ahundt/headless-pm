@@ -26,7 +26,7 @@ from src.api.dependencies import get_session
 from src.mcp.server import HeadlessPMMCPServer
 from tests.test_helpers import ServerManager, MultiClientTestHelper
 from tests.retry_decorator import retry_brittle_test
-from tests.resource_leak_detector import capture_system_state
+from tests.process_tree_leak_detective import capture_system_state
 from tests.process_tree_leak_detective import log_mcp_server_failure_context
 from tests.process_tree_leak_detective import setup_process_tree_tracking, comprehensive_leak_detection
 

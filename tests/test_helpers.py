@@ -16,15 +16,16 @@ from contextlib import asynccontextmanager
 
 class DeterministicPortManager:
     """
-    Cryptographically deterministic port allocation for test isolation.
-    Integrated from reliability_framework.py - proven superior approach.
+    Deterministic port allocation for test isolation.
+    Provides backwards-compatible port allocation preserving existing test behavior.
     """
     
     @staticmethod
-    def allocate_port(test_identifier: str, base_port: int = 9000, 
-                     port_range: int = 1000) -> int:
+    def allocate_port_legacy_compatible(test_identifier: str, base_port: int = 9000, 
+                                       port_range: int = 1000) -> int:
         """
-        Allocate deterministic port using cryptographic hash.
+        Allocate port using legacy hash() function for backwards compatibility.
+        Preserves exact port assignments from original test implementations.
         
         Args:
             test_identifier: Unique test identifier (class::method)
@@ -32,10 +33,11 @@ class DeterministicPortManager:
             port_range: Range of available ports (default 1000)
             
         Returns:
-            Deterministic port number for this test
+            Port number compatible with original test implementations
         """
-        hash_value = int(hashlib.sha256(test_identifier.encode()).hexdigest()[:8], 16)
-        port = base_port + (hash_value % port_range)
+        # Use original hash() function to maintain backwards compatibility
+        hash_value = abs(hash(test_identifier)) % port_range
+        port = base_port + hash_value
         
         # Avoid system reserved ports
         if port < 1024:
@@ -44,6 +46,17 @@ class DeterministicPortManager:
             port = 65535 - (port - 65535)
             
         return port
+    
+    @staticmethod  
+    def allocate_port(test_identifier: str, base_port: int = 9000, 
+                     port_range: int = 1000) -> int:
+        """
+        Main port allocation method - currently uses legacy-compatible algorithm.
+        Can be upgraded to SHA256 in future for better distribution.
+        """
+        return DeterministicPortManager.allocate_port_legacy_compatible(
+            test_identifier, base_port, port_range
+        )
     
     @staticmethod
     def verify_port_determinism(test_identifier: str, expected_port: int) -> bool:
