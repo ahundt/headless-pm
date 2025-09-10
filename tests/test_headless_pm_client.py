@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from headless_pm_client import HeadlessPMClient, load_env_file
 from tests.test_helpers import ServerManager
-from tests.process_leak_detective import detect_and_cleanup_leaks
+from tests.process_tree_leak_detective import comprehensive_leak_detection
 
 
 def TestableHeadlessPMClient(base_url=None, api_key=None):
@@ -54,8 +54,10 @@ class TestHeadlessPMClient(unittest.TestCase):
         
         # Calculate unique port for test isolation using class name hash
         class_name = cls.__name__
-        class_hash = abs(hashlib.md5(class_name.encode()).hexdigest().__hash__()) % 1000
-        unique_port = 8000 + class_hash
+        test_identifier = f"{class_name}::class_setup"  # Class-level identifier
+        
+        from tests.test_helpers import DeterministicPortManager
+        unique_port = DeterministicPortManager.allocate_port(test_identifier, base_port=8000, port_range=1000)
         print(f"\n[{class_name}] Using unique port {unique_port} for test isolation")
         
         # Create server manager and start API server

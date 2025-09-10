@@ -26,7 +26,8 @@ from src.api.dependencies import get_session
 from src.mcp.server import HeadlessPMMCPServer
 from tests.test_helpers import ServerManager, MultiClientTestHelper
 from tests.retry_decorator import retry_brittle_test
-from tests.resource_leak_detector import capture_system_state, log_mcp_server_failure_context
+from tests.resource_leak_detector import capture_system_state
+from tests.process_tree_leak_detective import log_mcp_server_failure_context
 from tests.process_tree_leak_detective import setup_process_tree_tracking, comprehensive_leak_detection
 
 
@@ -99,11 +100,13 @@ class TestMCPAutoDiscovery:
         """Pytest fixture for reliable test lifecycle management."""
         import hashlib, subprocess, os, pytest
         
-        # Calculate unique port for test isolation
+        # Calculate unique port for test isolation using DeterministicPortManager
         method_name = request.function.__name__
         class_name = request.cls.__name__
-        method_hash = abs(hash(f"{class_name}::{method_name}")) % 1000
-        unique_port = 9000 + method_hash
+        test_identifier = f"{class_name}::{method_name}"
+        
+        from tests.test_helpers import DeterministicPortManager
+        unique_port = DeterministicPortManager.allocate_port(test_identifier, base_port=9000, port_range=1000)
 
         # Aggressive pre-flight checks
         print(f"\n[FIXTURE SETUP {method_name}]: Using port {unique_port}. Verifying clean state...")

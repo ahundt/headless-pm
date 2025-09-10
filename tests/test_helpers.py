@@ -1,7 +1,9 @@
 """
 Test helper utilities for robust server management in tests.
+Enhanced with DRY port allocation and process management.
 """
 
+import hashlib
 import subprocess
 import time
 import httpx
@@ -10,6 +12,44 @@ import psutil
 from pathlib import Path
 from typing import Optional, List, Set
 from contextlib import asynccontextmanager
+
+
+class DeterministicPortManager:
+    """
+    Cryptographically deterministic port allocation for test isolation.
+    Integrated from reliability_framework.py - proven superior approach.
+    """
+    
+    @staticmethod
+    def allocate_port(test_identifier: str, base_port: int = 9000, 
+                     port_range: int = 1000) -> int:
+        """
+        Allocate deterministic port using cryptographic hash.
+        
+        Args:
+            test_identifier: Unique test identifier (class::method)
+            base_port: Starting port number (default 9000 for tests)
+            port_range: Range of available ports (default 1000)
+            
+        Returns:
+            Deterministic port number for this test
+        """
+        hash_value = int(hashlib.sha256(test_identifier.encode()).hexdigest()[:8], 16)
+        port = base_port + (hash_value % port_range)
+        
+        # Avoid system reserved ports
+        if port < 1024:
+            port += 1024
+        if port > 65535:
+            port = 65535 - (port - 65535)
+            
+        return port
+    
+    @staticmethod
+    def verify_port_determinism(test_identifier: str, expected_port: int) -> bool:
+        """Verify port allocation is deterministic."""
+        actual_port = DeterministicPortManager.allocate_port(test_identifier)
+        return actual_port == expected_port
 
 
 class ServerManager:

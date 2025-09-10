@@ -501,11 +501,28 @@ class TestRaceConditionDetector:
     @classmethod
     def teardown_class(cls):
         """Class-level teardown with comprehensive leak detection."""
-        comprehensive_leak_detection("TestRaceConditionDetector", {8888, 8889, 8890})
+        # Calculate actual ports used by this test file
+        from tests.test_helpers import DeterministicPortManager
+        test_methods = [
+            "test_coordination_file_atomicity",
+            "test_reliable_race_condition_detection", 
+            "test_signal_handler_behavior",
+            "test_async_coordination_deadlock_prevention"
+        ]
+        
+        actual_ports = set()
+        for method in test_methods:
+            test_identifier = f"TestRaceConditionDetector::{method}"
+            port = DeterministicPortManager.allocate_port(test_identifier, base_port=8000, port_range=1000)
+            actual_ports.add(port)
+            
+        comprehensive_leak_detection("TestRaceConditionDetector", actual_ports)
     
     async def test_reliable_race_condition_detection(self):
         """Reliably detect and report coordination race conditions."""
-        detector = RaceConditionDetector(test_port=8888)
+        from tests.test_helpers import DeterministicPortManager
+        test_port = DeterministicPortManager.allocate_port("TestRaceConditionDetector::test_coordination_file_atomicity", base_port=8000, port_range=1000)
+        detector = RaceConditionDetector(test_port=test_port)
         
         try:
             # Run comprehensive detection
@@ -549,7 +566,9 @@ class TestRaceConditionDetector:
 
     async def test_signal_handler_behavior(self):
         """Specifically test signal handler behavior in subprocess."""
-        detector = RaceConditionDetector(test_port=8889)
+        from tests.test_helpers import DeterministicPortManager
+        test_port = DeterministicPortManager.allocate_port("TestRaceConditionDetector::test_coordination_file_atomicity", base_port=8000, port_range=1000)
+        detector = RaceConditionDetector(test_port=test_port)
         
         try:
             print("Testing signal handler behavior...")
@@ -581,7 +600,9 @@ class TestRaceConditionDetector:
 
     async def test_coordination_file_atomicity(self):
         """Test coordination file operations for race conditions."""
-        detector = RaceConditionDetector(test_port=8890)
+        from tests.test_helpers import DeterministicPortManager
+        test_port = DeterministicPortManager.allocate_port("TestRaceConditionDetector::test_async_coordination_deadlock_prevention", base_port=8000, port_range=1000)
+        detector = RaceConditionDetector(test_port=test_port)
         
         try:
             print("Testing coordination file atomicity...")
