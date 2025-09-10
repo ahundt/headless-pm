@@ -244,7 +244,7 @@ class TestHeadlessPMClient(unittest.TestCase):
         print(f"✓ API server cleanup completed on port {cls.server_manager.port}")
         
         # LEAK DETECTIVE: Detect and attribute any remaining process leaks
-        detect_and_cleanup_leaks("TestHeadlessPMClient", {cls.server_manager.port})
+        comprehensive_leak_detection("TestHeadlessPMClient", {cls.server_manager.port})
     
     @classmethod
     def _cleanup_resource(cls, resource_type: str, resource_id: Any):
