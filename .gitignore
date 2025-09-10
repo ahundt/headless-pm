@@ -72,6 +72,17 @@ fix_*.py
 *_old.py
 *_backup.py
 
+# Test diagnostic files (temporary analysis artifacts)
+tests/test_mcp_instrumented_diagnostics.py
+tests/unified_test_framework.py
+notes/100x-isolation-test-results.txt
+notes/contaminating-test-analysis.txt
+notes/instrumented-test-run-results.txt
+
+# Test execution artifacts
+/tmp/test_diagnostics_*.json
+/tmp/full_test_results_*.log
+
 # results fodler
 test_results/*
 !test_results/report_example.md

@@ -91,7 +91,7 @@ class TestMCPAutoDiscovery:
     
     @classmethod
     def teardown_class(cls):
-        """Class-level teardown with comprehensive leak detection."""
+        """Class-level teardown with comprehensive leak detection.""" 
         comprehensive_leak_detection("TestMCPAutoDiscovery", {6969, 6968, 3001})
 
     @pytest.fixture
@@ -277,10 +277,21 @@ class TestMCPAutoDiscovery:
             # Verify API is still running (should be the original one)
             assert await self.is_api_running(server_manager), "API should still be running"
             
-            # MCP server should terminate cleanly when killed
+            # MCP server should terminate cleanly when killed - implement robust cleanup
             if mcp_process.poll() is None:
+                print(f"[CLEANUP] Terminating MCP process {mcp_process.pid}...")
                 mcp_process.terminate()
-                mcp_process.wait(timeout=5)
+                try:
+                    mcp_process.wait(timeout=5)
+                    print(f"[CLEANUP] ✅ Process {mcp_process.pid} terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    print(f"[CLEANUP] ⚠️ Process {mcp_process.pid} did not exit in time, force killing...")
+                    mcp_process.kill()
+                    try:
+                        mcp_process.wait(timeout=2)
+                        print(f"[CLEANUP] ✅ Process {mcp_process.pid} force-killed successfully")
+                    except subprocess.TimeoutExpired:
+                        print(f"[CLEANUP] ❌ CRITICAL: Process {mcp_process.pid} could not be killed")
             
             # Original API should still be running
             assert await self.is_api_running(server_manager), "Original API should still be running"

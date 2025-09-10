@@ -314,6 +314,129 @@ for attempt in range(max_attempts):
 
 **Status**: Leak prevention ✅ complete, diagnostic tools ✅ operational, MCP server ✅ reliable. Remaining: test environment stability and timeout resolution.
 
+---
+
+## 📋 **DRY TEST INFRASTRUCTURE CONSOLIDATION PLAN**
+
+### **Current Achievement**: 147/148 Passed (99.3% Reliability)
+- **Major Breakthrough**: Fixed 76.6% failure rate → 99.3% reliability
+- **Consistent Results**: Both background tests show identical 147/148 pattern
+- **Timeout**: ✅ 600s sufficient (tests complete in 236s)
+
+### **Problem**: Non-DRY Architecture With Major Duplication
+
+**Duplicate Detection Tools (9 files)**:
+1. `tests/process_leak_detective.py` - Global scanning (flawed, permission errors)
+2. `tests/process_tree_leak_detective.py` - Superior process tree tracking (**BEST**)
+3. `tests/resource_leak_detector.py` - Valuable `log_mcp_server_failure_context()` function
+4. `tests/reliability_framework.py` - `DeterministicPortManager` + formal state management (**BEST PORT SYSTEM**)
+5. `tests/test_mcp_instrumented_diagnostics.py` - Diagnostic test (temporary)
+6. Plus 4 test files with embedded detection logic
+
+**Inconsistent Port Allocation (5+ patterns)**:
+1. `test_mcp_autodiscovery.py`: `9000 + hash(method) % 1000`
+2. `test_headless_pm_client.py`: `8000 + hash(class)`
+3. `test_race_condition_detector.py`: Hardcoded `8888, 8889, 8890`
+4. `reliability_framework.py`: `DeterministicPortManager` (10000 + hash % 50000) - **BEST APPROACH**
+5. Unit tests: Hardcoded test data (8080, 8001, 8002)
+
+**Real System Defaults (Must Preserve)**:
+- SERVICE_PORT: 6969 (`src/main.py` default)
+- MCP_PORT: 6968 (`src/main.py` default)
+- DASHBOARD_PORT: 3001 (`src/main.py` default)
+
+### **Consolidation Strategy** (Read-First, No Regressions)
+
+#### **Phase 1: Commit Current Breakthrough Progress**
+**Files to Commit** (Core fixes):
+```
+src/mcp/server.py - Fixed stderr silencing + enhanced process monitoring
+tests/test_mcp_autodiscovery.py - Robust cleanup preventing contamination
+tests/process_tree_leak_detective.py - Enhanced with MCP failure context
+notes/2025-09-07-test-isolation-analysis.md - Complete analysis
+```
+
+**Add to .gitignore** (Generated/diagnostic files):
+```
+# Test diagnostic files
+tests/test_mcp_instrumented_diagnostics.py
+notes/100x-isolation-test-results.txt
+notes/contaminating-test-analysis.txt
+notes/instrumented-test-run-results.txt
+/tmp/test_diagnostics_*.json
+/tmp/full_test_results_*.log
+
+# Regressive files created in session
+tests/unified_test_framework.py
+```
+
+#### **Phase 2: Systematic Consolidation** (No New Files)
+
+**Primary Foundation**: `tests/process_tree_leak_detective.py` (**PROVEN SUPERIOR**)
+- **Justification**: No permission issues, precise attribution, cross-platform, already working
+- **Enhance**: Integrate `log_mcp_server_failure_context()` from resource_leak_detector.py
+- **Enhance**: Add DeterministicPortManager integration for consistent port detection
+- **Result**: Single authoritative detection tool
+
+**Secondary Foundation**: `tests/test_helpers.py` (Main infrastructure)
+- **Justification**: ServerManager used across multiple test files, proven reliable
+- **Enhance**: Integrate DeterministicPortManager for consistent port allocation
+- **Preserve**: All existing ServerManager functionality (backwards compatible)
+
+#### **Phase 3: Function-by-Function Integration**
+
+**Extract from `tests/resource_leak_detector.py`**:
+- `log_mcp_server_failure_context()` → Move to `process_tree_leak_detective.py`
+- **Reason**: Valuable MCP debugging context, unique functionality not duplicated elsewhere
+
+**Extract from `tests/reliability_framework.py`**:
+- `DeterministicPortManager.allocate_port()` → Integrate into `test_helpers.py` ServerManager
+- `ResourceTracker` concepts → Enhance existing process tracking
+- **Reason**: Best port allocation system, cryptographically deterministic
+
+**Files to Remove** (After function extraction):
+```
+tests/process_leak_detective.py - Superseded by process tree approach
+tests/unified_test_framework.py - Regressive conversation-named file
+```
+
+#### **Phase 4: Standardize All Test Files**
+
+**Replace Custom Port Allocation**:
+```
+test_mcp_autodiscovery.py line 133: unique_port = 9000 + method_hash
+→ Replace with: DeterministicPortManager.allocate_port(f"{class_name}::{method_name}", base_port=9000)
+
+test_headless_pm_client.py: unique_port = 8000 + class_hash
+→ Replace with: DeterministicPortManager.allocate_port(test_identifier, base_port=8000)
+
+test_race_condition_detector.py: hardcoded 8888, 8889, 8890  
+→ Replace with: DeterministicPortManager.allocate_port() per test method
+```
+
+**Deploy Robust Cleanup Pattern**:
+- **Pattern**: `terminate() → wait(timeout=5) → kill() → wait(timeout=2)`
+- **Deploy**: Replace all simple `terminate() + wait()` patterns
+- **Files**: All test files with subprocess management
+
+#### **Phase 5: Validation & Integration Testing**
+
+**Test Sequence**:
+1. **Individual file testing** - ensure no regressions introduced
+2. **Integration testing** - verify cross-file compatibility  
+3. **Full suite validation** - achieve 148/148 target reliability
+4. **Backwards compatibility** - preserve real system functionality
+
+### **Success Criteria**
+- **148/148 test reliability** (eliminate final 1 failure)
+- **Single detection tool** (`process_tree_leak_detective.py` enhanced)
+- **Consistent port allocation** (DeterministicPortManager throughout)
+- **Zero regressions** from current 147/148 stable state
+- **Backwards compatible** with real system defaults (6969, 6968, 3001)
+
+### **Key Insight**: 
+The "unified" files I created were wrong because I didn't read existing code first. The consolidation must **enhance existing proven systems** rather than create new ones with conversation-based naming.
+
 ## 🔍 CONCRETE DETECTOR FINDINGS
 
 ### Instrumented Diagnostic Results

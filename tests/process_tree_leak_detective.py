@@ -1,14 +1,18 @@
 """
-Superior Consolidated Test Diagnostics Tool
+Superior Consolidated Test Diagnostics Tool - DRY Design
 
-Combines the best elements from all leak detection approaches:
+Integrates best elements from all existing systems:
+- DeterministicPortManager (reliability_framework.py) for consistent port allocation
 - Process tree tracking (superior approach for child process detection)
-- MCP server failure diagnostics (valuable context for API startup failures)
+- MCP server failure diagnostics (valuable context for API startup failures)  
 - Robust process cleanup patterns (terminate-wait-kill)
+- Backwards compatible with real system defaults (6969, 6968, 3001)
 
+Easy to use correctly, hard to use incorrectly.
 This is the single authoritative diagnostic tool for the test suite.
 """
 
+import hashlib
 import os
 import psutil
 import socket
@@ -322,3 +326,100 @@ def robust_process_cleanup(process_list: List[subprocess.Popen], test_name: str,
     
     print(f"[ROBUST CLEANUP] {test_name}: {cleanup_report['processes_cleaned']} graceful, {cleanup_report['processes_killed']} force-killed, {len(cleanup_report['cleanup_failures'])} failures")
     return cleanup_report
+
+
+def per_test_file_port_detection(test_file_path: str, test_ports: Set[int] = None) -> Dict[str, Any]:
+    """
+    Enhanced leak detection for end-of-test-file validation.
+    Reports exact test file and specific ports still orphaned.
+    
+    Usage in test file teardown_class:
+        @classmethod 
+        def teardown_class(cls):
+            per_test_file_port_detection(__file__, {6969, 6968, 3001})
+    
+    Args:
+        test_file_path: __file__ of the test file for exact attribution
+        test_ports: Set of ports this test file uses
+        
+    Returns:
+        Dict with test file name, orphaned ports, and specific process details
+    """
+    test_file_name = os.path.basename(test_file_path)
+    test_ports = test_ports or {6969, 6968, 3001}  # Default HeadlessPM ports
+    
+    print(f"\n[FILE PORT DETECTIVE] Checking {test_file_name} for orphaned ports: {test_ports}")
+    
+    orphaned_details = {
+        "test_file": test_file_name,
+        "test_file_path": test_file_path,
+        "checked_ports": list(test_ports),
+        "orphaned_ports": [],
+        "clean_ports": [],
+        "total_orphans": 0
+    }
+    
+    for port in test_ports:
+        try:
+            # Check if port is occupied using socket test
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('localhost', port))
+            sock.close()
+            
+            if result == 0:
+                # Port is occupied - get process details
+                try:
+                    result = subprocess.run(
+                        ['lsof', '-ti', f':{port}'],
+                        capture_output=True, text=True, check=False
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
+                        for pid in pids:
+                            try:
+                                proc = psutil.Process(pid)
+                                orphaned_details["orphaned_ports"].append({
+                                    "port": port,
+                                    "pid": pid,
+                                    "name": proc.name(),
+                                    "cmdline": ' '.join(proc.cmdline()[:5]),  # First 5 args
+                                    "create_time": proc.create_time(),
+                                    "status": proc.status()
+                                })
+                                orphaned_details["total_orphans"] += 1
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                orphaned_details["orphaned_ports"].append({
+                                    "port": port,
+                                    "pid": pid,
+                                    "name": "unknown",
+                                    "cmdline": "access denied"
+                                })
+                                orphaned_details["total_orphans"] += 1
+                except (subprocess.SubprocessError, FileNotFoundError):
+                    # lsof not available - fallback to socket check only
+                    orphaned_details["orphaned_ports"].append({
+                        "port": port,
+                        "pid": "unknown", 
+                        "name": "unknown",
+                        "cmdline": "lsof not available - port occupied"
+                    })
+                    orphaned_details["total_orphans"] += 1
+            else:
+                # Port is free
+                orphaned_details["clean_ports"].append(port)
+                
+        except Exception as e:
+            print(f"[FILE PORT DETECTIVE] Error checking port {port}: {e}")
+    
+    # Report results
+    if orphaned_details["total_orphans"] > 0:
+        print(f"[FILE PORT DETECTIVE] ❌ {test_file_name}: {orphaned_details['total_orphans']} orphaned ports detected")
+        for port_info in orphaned_details["orphaned_ports"]:
+            print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['name']} ({port_info['cmdline']})")
+        print(f"[FILE PORT DETECTIVE] Clean ports: {orphaned_details['clean_ports']}")
+    else:
+        print(f"[FILE PORT DETECTIVE] ✅ {test_file_name}: All test ports clean ({orphaned_details['clean_ports']})")
+    
+    return orphaned_details
