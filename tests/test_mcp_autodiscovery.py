@@ -100,12 +100,15 @@ class TestMCPAutoDiscovery:
         """Pytest fixture for reliable test lifecycle management."""
         import hashlib, subprocess, os, pytest
         
-        # Use real system port allocation for test/production consistency
+        # Use real system port allocation with unique base port per test
         method_name = request.function.__name__
         class_name = request.cls.__name__
+        test_identifier = f"{class_name}::{method_name}"
         
         from src.main import get_port
-        unique_port = get_port(default_port=9000, auto_discover=True, quiet=True)
+        # Generate unique base port using same hash approach for test isolation
+        base_port = 9000 + (abs(hash(test_identifier)) % 1000)
+        unique_port = get_port(default_port=base_port, auto_discover=True, quiet=True)
 
         # Aggressive pre-flight checks
         print(f"\n[FIXTURE SETUP {method_name}]: Using port {unique_port}. Verifying clean state...")
