@@ -294,60 +294,42 @@ def detect_and_cleanup_process_tree_leaks(test_name: str) -> Dict:
 
 def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
     """
-    Check specific test ports for orphaned processes using lsof.
-    More reliable than psutil on macOS and doesn't require permissions.
-    Robust to legitimate system processes using ports.
+    Check if any CHILD PROCESSES of the test are occupying ports (process ancestry approach).
+    Uses same superior methodology as process tree tracking - no system-wide scanning.
     """
-    import subprocess
+    global _tree_detective
     
     test_ports = test_ports or {6969, 6968, 3001}  # Default HeadlessPM ports
     orphaned_ports = []
     
-    for port in test_ports:
-        try:
-            # Use lsof to check port - works without special permissions
-            result = subprocess.run(
-                ['lsof', '-ti', f':{port}'],
-                capture_output=True, text=True, check=False
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                # Port is in use, get process details
-                pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
-                for pid in pids:
-                    try:
-                        proc = psutil.Process(pid)
-                        cmdline = ' '.join(proc.cmdline())
-                        name = proc.name()
-                        
-                        # Only report processes that could be test-related
-                        # Skip obvious system processes (Chrome, Safari, system utilities)
-                        if any(pattern in cmdline for pattern in [
-                            'Google Chrome', 'Chrome Helper', 'Safari', 'Firefox',
-                            '/System/', '/usr/libexec/', 'PowerUIAgent'
-                        ]):
-                            continue  # Skip legitimate system processes silently
-                            
+    # Get current child processes (same approach as process tree detection)
+    try:
+        current_process = psutil.Process(_tree_detective.test_pid)
+        current_children = current_process.children(recursive=True)
+        
+        # For each child process, check if it's occupying any test ports
+        for child in current_children:
+            try:
+                # Check all connections of this child process
+                for conn in child.connections():
+                    if conn.laddr and conn.laddr.port in test_ports:
+                        # This child process is occupying a test port
                         orphaned_ports.append({
-                            'port': port,
-                            'pid': pid,
-                            'name': name,
-                            'cmdline': cmdline
+                            'port': conn.laddr.port,
+                            'pid': child.pid,
+                            'name': child.name(),
+                            'cmdline': ' '.join(child.cmdline())
                         })
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        orphaned_ports.append({
-                            'port': port,
-                            'pid': pid,
-                            'name': 'unknown',
-                            'cmdline': 'access denied'
-                        })
-                        
-        except (subprocess.SubprocessError, FileNotFoundError):
-            # lsof not available or failed
-            continue
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Process may have terminated or denied access - skip
+                continue
+                
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        # Test process itself is gone or denied - skip port check
+        pass
     
     if orphaned_ports:
-        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} orphaned ports:")
+        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} child processes on test ports:")
         for port_info in orphaned_ports:
             print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['cmdline'][:80]}")
     
