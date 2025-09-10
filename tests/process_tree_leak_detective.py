@@ -294,8 +294,9 @@ def detect_and_cleanup_process_tree_leaks(test_name: str) -> Dict:
 
 def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
     """
-    Check specific test ports for test-related orphaned processes.
-    Excludes legitimate system processes (Chrome, system services).
+    Check specific test ports for orphaned processes using lsof.
+    More reliable than psutil on macOS and doesn't require permissions.
+    Robust to legitimate system processes using ports.
     """
     import subprocess
     
@@ -311,7 +312,7 @@ def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
             )
             
             if result.returncode == 0 and result.stdout.strip():
-                # Port is in use, get process details and filter for test-related processes
+                # Port is in use, get process details
                 pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
                 for pid in pids:
                     try:
@@ -319,38 +320,26 @@ def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
                         cmdline = ' '.join(proc.cmdline())
                         name = proc.name()
                         
-                        # Filter out legitimate system processes
-                        if _is_legitimate_system_process(name, cmdline):
-                            print(f"[PORT DETECTIVE] Port {port}: PID {pid} - {name} (legitimate system process, ignored)")
-                            continue
+                        # Only report processes that could be test-related
+                        # Skip obvious system processes (Chrome, Safari, system utilities)
+                        if any(pattern in cmdline for pattern in [
+                            'Google Chrome', 'Chrome Helper', 'Safari', 'Firefox',
+                            '/System/', '/usr/libexec/', 'PowerUIAgent'
+                        ]):
+                            continue  # Skip legitimate system processes silently
                             
-                        # Only report test-related or potentially orphaned processes
-                        if _is_test_related_process(name, cmdline):
-                            orphaned_ports.append({
-                                'port': port,
-                                'pid': pid,
-                                'name': name,
-                                'cmdline': cmdline,
-                                'classification': 'test-related'
-                            })
-                        else:
-                            # Potentially orphaned HeadlessPM processes
-                            if any(keyword in cmdline.lower() for keyword in ['headless', 'uvicorn', 'src.main', 'next-server']):
-                                orphaned_ports.append({
-                                    'port': port,
-                                    'pid': pid,
-                                    'name': name,
-                                    'cmdline': cmdline,
-                                    'classification': 'potentially-orphaned'
-                                })
-                                
+                        orphaned_ports.append({
+                            'port': port,
+                            'pid': pid,
+                            'name': name,
+                            'cmdline': cmdline
+                        })
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         orphaned_ports.append({
                             'port': port,
                             'pid': pid,
                             'name': 'unknown',
-                            'cmdline': 'access denied',
-                            'classification': 'unknown'
+                            'cmdline': 'access denied'
                         })
                         
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -358,39 +347,12 @@ def check_for_orphaned_ports(test_ports: Set[int] = None) -> List[Dict]:
             continue
     
     if orphaned_ports:
-        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} potentially problematic ports:")
+        print(f"[PORT DETECTIVE] Found {len(orphaned_ports)} orphaned ports:")
         for port_info in orphaned_ports:
-            classification = port_info.get('classification', 'unknown')
-            print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['name']} ({classification})")
-            print(f"    Command: {port_info['cmdline'][:80]}")
+            print(f"  Port {port_info['port']}: PID {port_info['pid']} - {port_info['cmdline'][:80]}")
     
     return orphaned_ports
 
-def _is_legitimate_system_process(name: str, cmdline: str) -> bool:
-    """Check if process is a legitimate system process that should not be killed."""
-    legitimate_patterns = [
-        'Google Chrome',
-        'Chrome Helper',
-        'Safari',
-        'Firefox', 
-        'PowerUIAgent',
-        '/System/',
-        '/usr/libexec/',
-        '/Applications/' # Apps running legitimately
-    ]
-    
-    return any(pattern in cmdline for pattern in legitimate_patterns)
-
-def _is_test_related_process(name: str, cmdline: str) -> bool:
-    """Check if process is clearly test-related."""
-    test_patterns = [
-        'pytest',
-        'python.*test',
-        'src.mcp.server',
-        'test_'
-    ]
-    
-    return any(pattern in cmdline.lower() for pattern in test_patterns)
 
 
 def comprehensive_leak_detection(test_name: str, test_ports: Set[int] = None) -> Dict:

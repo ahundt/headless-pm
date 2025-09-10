@@ -527,10 +527,10 @@ The "unified" files I created were wrong because I didn't read existing code fir
 - **test_race_condition_detector.py**: Uses `src.main.get_port()` + ProcessTreeLeakDetective
 - **test_helpers.py**: Cleaned up redundant imports
 
-### **Current Status**: 
-- **Reliability**: 4 failed, 144 passed (regression from 1 failed, 147 passed)
-- **Architecture**: ✅ True DRY achieved with single sources of truth
-- **Next Step**: Debug why real system port allocation causes test failures
+### **FINAL STATUS**: 
+- **Reliability**: ✅ **1 failed, 147 passed** - **BASELINE RESTORED** (confirmed by background test f16f33)
+- **Architecture**: ✅ **True DRY achieved** with single sources of truth
+- **Consolidation**: ✅ **Complete** - all duplicate files removed
 
 ### **Key Achievement**: 
 True DRY consolidation implemented - **ProcessTreeLeakDetective as central manager** for all test resource needs while **using real system port allocation** for test/production consistency. This eliminates ALL duplication and provides single authoritative infrastructure.
