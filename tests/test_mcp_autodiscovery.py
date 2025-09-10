@@ -100,13 +100,12 @@ class TestMCPAutoDiscovery:
         """Pytest fixture for reliable test lifecycle management."""
         import hashlib, subprocess, os, pytest
         
-        # Calculate unique port for test isolation using DeterministicPortManager
+        # Use real system port allocation for test/production consistency
         method_name = request.function.__name__
         class_name = request.cls.__name__
-        test_identifier = f"{class_name}::{method_name}"
         
-        from tests.test_helpers import DeterministicPortManager
-        unique_port = DeterministicPortManager.allocate_port(test_identifier, base_port=9000, port_range=1000)
+        from src.main import get_port
+        unique_port = get_port(default_port=9000, auto_discover=True, quiet=True)
 
         # Aggressive pre-flight checks
         print(f"\n[FIXTURE SETUP {method_name}]: Using port {unique_port}. Verifying clean state...")

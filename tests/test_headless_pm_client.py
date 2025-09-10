@@ -52,12 +52,11 @@ class TestHeadlessPMClient(unittest.TestCase):
         # Load environment variables
         load_env_file()
         
-        # Calculate unique port for test isolation using class name hash
+        # Use real system port allocation for test/production consistency
         class_name = cls.__name__
-        test_identifier = f"{class_name}::class_setup"  # Class-level identifier
         
-        from tests.test_helpers import DeterministicPortManager
-        unique_port = DeterministicPortManager.allocate_port(test_identifier, base_port=8000, port_range=1000)
+        from src.main import get_port  
+        unique_port = get_port(default_port=8000, auto_discover=True, quiet=True)
         print(f"\n[{class_name}] Using unique port {unique_port} for test isolation")
         
         # Create server manager and start API server

@@ -1,9 +1,8 @@
 """
 Test helper utilities for robust server management in tests.
-Enhanced with DRY port allocation and process management.
+Uses real system port allocation (src.main.get_port) for consistency.
 """
 
-import hashlib
 import subprocess
 import time
 import httpx
@@ -12,57 +11,6 @@ import psutil
 from pathlib import Path
 from typing import Optional, List, Set
 from contextlib import asynccontextmanager
-
-
-class DeterministicPortManager:
-    """
-    Deterministic port allocation for test isolation.
-    Provides backwards-compatible port allocation preserving existing test behavior.
-    """
-    
-    @staticmethod
-    def allocate_port_legacy_compatible(test_identifier: str, base_port: int = 9000, 
-                                       port_range: int = 1000) -> int:
-        """
-        Allocate port using legacy hash() function for backwards compatibility.
-        Preserves exact port assignments from original test implementations.
-        
-        Args:
-            test_identifier: Unique test identifier (class::method)
-            base_port: Starting port number (default 9000 for tests)
-            port_range: Range of available ports (default 1000)
-            
-        Returns:
-            Port number compatible with original test implementations
-        """
-        # Use original hash() function to maintain backwards compatibility
-        hash_value = abs(hash(test_identifier)) % port_range
-        port = base_port + hash_value
-        
-        # Avoid system reserved ports
-        if port < 1024:
-            port += 1024
-        if port > 65535:
-            port = 65535 - (port - 65535)
-            
-        return port
-    
-    @staticmethod  
-    def allocate_port(test_identifier: str, base_port: int = 9000, 
-                     port_range: int = 1000) -> int:
-        """
-        Main port allocation method - currently uses legacy-compatible algorithm.
-        Can be upgraded to SHA256 in future for better distribution.
-        """
-        return DeterministicPortManager.allocate_port_legacy_compatible(
-            test_identifier, base_port, port_range
-        )
-    
-    @staticmethod
-    def verify_port_determinism(test_identifier: str, expected_port: int) -> bool:
-        """Verify port allocation is deterministic."""
-        actual_port = DeterministicPortManager.allocate_port(test_identifier)
-        return actual_port == expected_port
 
 
 class ServerManager:

@@ -23,12 +23,18 @@ from pathlib import Path
 
 
 class ProcessTreeLeakDetective:
-    """Detective using process tree tracking - avoids permission issues."""
+    """
+    Central manager for ALL test process and resource management.
+    Handles process lifecycle, leak detection, cleanup coordination.
+    Uses real system port allocation (src.main.get_port) for consistency.
+    """
     
     def __init__(self):
         self.test_pid = os.getpid()
         self.initial_children: Set[int] = set()
-        self.spawned_processes: List[Dict] = []
+        self.tracked_processes: Dict[int, Dict[str, Any]] = {}  # Enhanced process tracking
+        self.allocated_ports: Set[int] = set()  # Track ports for cleanup verification
+        self.test_identifier: Optional[str] = None
         
     def capture_baseline(self):
         """Capture baseline of child processes at test start."""
@@ -109,6 +115,154 @@ class ProcessTreeLeakDetective:
                 return False
         except Exception:
             return False
+    
+    def start_managed_process(self, command: List[str], port: int = None, 
+                            test_name: str = "unknown", timeout: float = 30.0) -> subprocess.Popen:
+        """
+        Start and track a process with full lifecycle management.
+        Integrates best practices from ProcessLifecycleManager and ServerManager.
+        
+        Args:
+            command: Command to execute
+            port: Port the process will use (if any)
+            test_name: Test name for attribution
+            timeout: Startup timeout
+            
+        Returns:
+            Started process handle
+        """
+        try:
+            # Start process with robust configuration
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,  # Always capture stderr for diagnostics
+                stdin=subprocess.PIPE,   # MCP servers need stdin
+                text=True,
+                bufsize=1  # Line buffering
+            )
+            
+            # Track process for cleanup
+            self.tracked_processes[proc.pid] = {
+                'process': proc,
+                'command': command,
+                'port': port,
+                'test_name': test_name,
+                'start_time': time.time()
+            }
+            
+            print(f"[PROCESS MANAGER] Started {test_name} process {proc.pid}" + 
+                  (f" on port {port}" if port else ""))
+            
+            return proc
+            
+        except Exception as e:
+            print(f"[PROCESS MANAGER] ❌ Failed to start {test_name}: {e}")
+            raise
+    
+    def stop_managed_process(self, proc: subprocess.Popen, timeout: float = 5.0) -> bool:
+        """
+        Stop process with robust terminate-wait-kill pattern.
+        
+        Args:
+            proc: Process to stop
+            timeout: Graceful termination timeout
+            
+        Returns:
+            True if successfully stopped
+        """
+        if proc.poll() is not None:
+            # Process already terminated
+            return True
+            
+        try:
+            proc_info = self.tracked_processes.get(proc.pid, {})
+            test_name = proc_info.get('test_name', 'unknown')
+            
+            print(f"[PROCESS MANAGER] Stopping {test_name} process {proc.pid}...")
+            
+            # Close stdin first for MCP servers
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+                
+            # Graceful termination
+            proc.terminate()
+            
+            try:
+                proc.wait(timeout=timeout)
+                print(f"[PROCESS MANAGER] ✅ Process {proc.pid} terminated gracefully")
+                return True
+            except subprocess.TimeoutExpired:
+                # Force kill if graceful termination fails
+                print(f"[PROCESS MANAGER] ⚠️ Process {proc.pid} timeout, force killing...")
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                    print(f"[PROCESS MANAGER] ✅ Process {proc.pid} force-killed")
+                    return True
+                except subprocess.TimeoutExpired:
+                    print(f"[PROCESS MANAGER] ❌ Process {proc.pid} could not be killed")
+                    return False
+                    
+        except Exception as e:
+            print(f"[PROCESS MANAGER] ❌ Error stopping process {proc.pid}: {e}")
+            return False
+        finally:
+            # Remove from tracking
+            self.tracked_processes.pop(proc.pid, None)
+    
+    def cleanup_all_managed_processes(self, test_name: str = "unknown") -> Dict[str, Any]:
+        """
+        Clean up all tracked processes with comprehensive reporting.
+        
+        Returns:
+            Cleanup statistics and results
+        """
+        cleanup_stats = {
+            'test_name': test_name,
+            'processes_cleaned': 0,
+            'processes_killed': 0,
+            'cleanup_failures': [],
+            'ports_verified': 0
+        }
+        
+        print(f"[PROCESS MANAGER] Cleaning up {len(self.tracked_processes)} tracked processes for {test_name}")
+        
+        # Stop all tracked processes
+        for pid, info in list(self.tracked_processes.items()):
+            proc = info['process']
+            if self.stop_managed_process(proc):
+                if proc.returncode == 0:
+                    cleanup_stats['processes_cleaned'] += 1
+                else:
+                    cleanup_stats['processes_killed'] += 1
+            else:
+                cleanup_stats['cleanup_failures'].append({
+                    'pid': pid,
+                    'test_name': info['test_name'],
+                    'command': info['command']
+                })
+        
+        # Verify allocated ports are released
+        for port in self.allocated_ports:
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('localhost', port))
+                sock.close()
+                
+                if result != 0:  # Port is free
+                    cleanup_stats['ports_verified'] += 1
+                else:
+                    print(f"[PROCESS MANAGER] ⚠️ Port {port} still occupied after cleanup")
+            except Exception:
+                pass
+        
+        print(f"[PROCESS MANAGER] Cleanup complete: {cleanup_stats['processes_cleaned']} graceful, "
+              f"{cleanup_stats['processes_killed']} killed, {cleanup_stats['ports_verified']} ports freed")
+        
+        return cleanup_stats
 
 
 # Global instance for test coordination
