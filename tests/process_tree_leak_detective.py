@@ -1,12 +1,20 @@
 """
-Process Tree Leak Detective - Superior approach using process tree tracking.
-Tracks child processes spawned from the test process itself - no permission issues.
+Superior Consolidated Test Diagnostics Tool
+
+Combines the best elements from all leak detection approaches:
+- Process tree tracking (superior approach for child process detection)
+- MCP server failure diagnostics (valuable context for API startup failures)
+- Robust process cleanup patterns (terminate-wait-kill)
+
+This is the single authoritative diagnostic tool for the test suite.
 """
 
 import os
 import psutil
+import socket
+import subprocess
 import time
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional, Any
 from pathlib import Path
 
 
@@ -210,3 +218,107 @@ def comprehensive_leak_detection(test_name: str, test_ports: Set[int] = None) ->
         'leaked_processes': tree_results['leaked_processes'],
         'port_processes': orphaned_ports
     }
+
+
+def log_mcp_server_failure_context(server_manager, test_name: str = "Unknown") -> str:
+    """
+    Log comprehensive MCP server failure context for debugging.
+    Integrated from resource_leak_detector.py - this function was uniquely valuable.
+    """
+    report = [f"\n=== MCP SERVER FAILURE CONTEXT: {test_name} (Port {server_manager.port}) ==="]
+    
+    # Check if port is actually free
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(('localhost', server_manager.port))
+        sock.close()
+        
+        if result == 0:
+            report.append(f"❌ Port {server_manager.port} is OCCUPIED (not free as expected)")
+        else:
+            report.append(f"✅ Port {server_manager.port} is free")
+    except Exception as e:
+        report.append(f"⚠️ Port check failed: {e}")
+    
+    # Check for running API processes
+    api_processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
+            if any(keyword in cmdline for keyword in ['uvicorn', 'src.main', f':{server_manager.port}']):
+                api_processes.append(f"PID {proc.info['pid']}: {cmdline[:80]}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    
+    if api_processes:
+        report.append(f"❌ Found {len(api_processes)} potentially conflicting API processes:")
+        for proc_info in api_processes:
+            report.append(f"  {proc_info}")
+    else:
+        report.append("✅ No conflicting API processes found")
+    
+    # Check MCP coordination files
+    try:
+        mcp_files = list(Path("/tmp").glob("*mcp_coordination*"))
+        if mcp_files:
+            report.append(f"⚠️ Found {len(mcp_files)} MCP coordination files:")
+            for f in mcp_files[:5]:  # Limit to first 5
+                report.append(f"  {f.name}")
+        else:
+            report.append("✅ No MCP coordination files in /tmp")
+    except Exception as e:
+        report.append(f"⚠️ File check failed: {e}")
+    
+    failure_context = "\n".join(report)
+    print(failure_context)
+    return failure_context
+
+
+def robust_process_cleanup(process_list: List[subprocess.Popen], test_name: str, timeout: int = 5) -> Dict[str, Any]:
+    """
+    Implement robust terminate-wait-kill pattern for process cleanup.
+    This prevents the source-level leaks identified in the analysis.
+    """
+    cleanup_report = {
+        "test_name": test_name,
+        "processes_cleaned": 0,
+        "processes_killed": 0,
+        "cleanup_failures": []
+    }
+    
+    for proc in process_list:
+        if proc and proc.poll() is None:
+            try:
+                print(f"[ROBUST CLEANUP] Terminating process {proc.pid} for {test_name}...")
+                proc.terminate()
+                
+                try:
+                    # Wait up to timeout seconds for graceful exit
+                    proc.wait(timeout=timeout)
+                    print(f"[ROBUST CLEANUP] ✅ Process {proc.pid} terminated gracefully")
+                    cleanup_report["processes_cleaned"] += 1
+                except subprocess.TimeoutExpired:
+                    # Force kill if graceful termination fails
+                    print(f"[ROBUST CLEANUP] ⚠️ Process {proc.pid} did not exit in time, force killing...")
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2)
+                        print(f"[ROBUST CLEANUP] ✅ Process {proc.pid} force-killed successfully")
+                        cleanup_report["processes_killed"] += 1
+                    except subprocess.TimeoutExpired:
+                        print(f"[ROBUST CLEANUP] ❌ Process {proc.pid} could not be killed")
+                        cleanup_report["cleanup_failures"].append({
+                            "pid": proc.pid,
+                            "error": "Could not be killed even with force"
+                        })
+                        
+            except Exception as e:
+                print(f"[ROBUST CLEANUP] ❌ Failed to cleanup process {proc.pid}: {e}")
+                cleanup_report["cleanup_failures"].append({
+                    "pid": proc.pid,
+                    "error": str(e)
+                })
+    
+    print(f"[ROBUST CLEANUP] {test_name}: {cleanup_report['processes_cleaned']} graceful, {cleanup_report['processes_killed']} force-killed, {len(cleanup_report['cleanup_failures'])} failures")
+    return cleanup_report

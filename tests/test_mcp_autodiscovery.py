@@ -557,10 +557,28 @@ class TestMCPAutoDiscovery:
                     assert response.status_code == 200, f"{test_name} endpoint should return 200, got {response.status_code}"
                 
         finally:
-            if mcp_process.poll() is None:
+            # ROBUST CLEANUP: Implement terminate-wait-kill pattern to prevent leaks
+            if mcp_process and mcp_process.poll() is None:
+                print(f"[TEARDOWN] Terminating MCP process {mcp_process.pid}...")
                 mcp_process.terminate()
-                mcp_process.wait()
+                try:
+                    # Wait up to 5 seconds for graceful exit
+                    mcp_process.wait(timeout=5)
+                    print(f"[TEARDOWN] ✅ Process {mcp_process.pid} terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    # If it doesn't exit, force kill it
+                    print(f"[TEARDOWN] ⚠️ Process {mcp_process.pid} did not exit in time, killing...")
+                    mcp_process.kill()
+                    try:
+                        mcp_process.wait(timeout=2)
+                        print(f"[TEARDOWN] ✅ Process {mcp_process.pid} force-killed successfully")
+                    except subprocess.TimeoutExpired:
+                        print(f"[TEARDOWN] ❌ CRITICAL: Process {mcp_process.pid} could not be killed")
+                        
             self.ensure_no_api_running(server_manager)
+            
+            # Use superior leak detective to verify cleanup was successful
+            comprehensive_leak_detection("test_api_functionality_with_http_client", {server_manager.port})
 
     @pytest.mark.asyncio
     async def test_multiple_mcp_clients_scenario(self, server_manager, mcp_server_path):

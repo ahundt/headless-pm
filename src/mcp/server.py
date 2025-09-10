@@ -335,6 +335,100 @@ class HeadlessPMMCPServer:
 
             # Determine working directory with better user context preservation
             working_dir = self._determine_working_directory(headless_pm_cmd)
+            logger.info(f"Working directory determined: {working_dir}")
+            
+            # Ensure working directory is valid and absolute
+            if working_dir is None:
+                working_dir = os.getcwd()
+                logger.info(f"Using current working directory: {working_dir}")
+            
+            working_dir = str(working_dir)  # Ensure string type
+            if not os.path.isabs(working_dir):
+                working_dir = os.path.abspath(working_dir)
+                logger.info(f"Made working directory absolute: {working_dir}")
+            
+            # ENVIRONMENT PRE-VALIDATION: Check prerequisites before subprocess spawn
+            logger.info("Validating environment prerequisites...")
+            
+            # 1. Validate HeadlessPM command is executable
+            cmd_to_check = headless_pm_cmd[0]
+            if not os.path.isabs(cmd_to_check):
+                # For relative commands, resolve through PATH
+                try:
+                    result = subprocess.run(['which', cmd_to_check], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        cmd_to_check = result.stdout.strip()
+                        logger.debug(f"Resolved command '{headless_pm_cmd[0]}' to '{cmd_to_check}'")
+                    else:
+                        logger.error(f"❌ Command not found in PATH: {headless_pm_cmd[0]}")
+                        logger.error("   Check if command is installed and PATH is correct")
+                        return False
+                except Exception as e:
+                    logger.error(f"❌ Failed to resolve command path: {e}")
+                    return False
+            
+            if not os.access(cmd_to_check, os.X_OK):
+                logger.error(f"❌ Command not executable: {cmd_to_check}")
+                logger.error("   Check file permissions")
+                return False
+                
+            logger.debug(f"✅ Command validated: {cmd_to_check}")
+            
+            # 2. Validate working directory accessibility
+            if not os.path.exists(working_dir):
+                logger.error(f"❌ Working directory does not exist: {working_dir}")
+                return False
+                
+            if not os.access(working_dir, os.R_OK | os.W_OK):
+                logger.error(f"❌ Working directory not accessible: {working_dir}")
+                logger.error("   Check directory permissions")
+                return False
+            
+            # 3. Check port availability
+            import socket
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    result = s.connect_ex(('localhost', port))
+                    if result == 0:
+                        logger.warning(f"⚠️ Port {port} appears to be occupied")
+                        logger.warning("   Will attempt startup anyway (may be existing HeadlessPM)")
+            except Exception as e:
+                logger.debug(f"Port check failed (proceeding anyway): {e}")
+            
+            # 4. Validate Python interpreter and basic imports
+            try:
+                # Test if we can import required modules by running a quick validation
+                import sys
+                test_cmd = [sys.executable, "-c", "import sqlite3, fastapi, uvicorn; print('OK')"]
+                result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    logger.warning(f"⚠️ Python dependency validation failed: {result.stderr}")
+                    logger.warning("   HeadlessPM may fail due to missing dependencies")
+                else:
+                    logger.info("✅ Python dependencies validated")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not validate dependencies: {e}")
+            
+            # 5. Check database connectivity (if database file exists)
+            database_path = os.path.join(working_dir, "headless_pm.db")
+            if os.path.exists(database_path):
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(database_path, timeout=5)
+                    conn.execute("SELECT 1")
+                    conn.close()
+                    logger.info(f"✅ Database connectivity validated: {database_path}")
+                except Exception as e:
+                    logger.error(f"❌ Database connectivity failed: {e}")
+                    logger.error(f"   Database: {database_path}")
+                    logger.error("   This may cause HeadlessPM startup failure")
+                    print(f"❌ Database error: {e}", file=sys.stderr)
+                    return False
+            else:
+                logger.info(f"Database will be created at: {database_path}")
+            
+            logger.info("✅ Environment pre-validation completed")
 
             # Start API process with fork bomb prevention
             fork_bomb_env = {
@@ -346,41 +440,106 @@ class HeadlessPMMCPServer:
             if headless_pm_cmd and "headless-pm" in " ".join(str(arg) for arg in headless_pm_cmd):
                 fork_bomb_env["MCP_PORT"] = ""  # Disable MCP server only for recursive commands
             
+            # CRITICAL FIX: Capture stderr while preserving stdout for stdio MCP compatibility
             self._api_process = subprocess.Popen(
                 headless_pm_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,  # Keep DEVNULL for stdout to prevent buffering issues and stdio MCP conflicts
+                stderr=subprocess.PIPE,     # FIXED: Capture stderr instead of DEVNULL for error diagnostics
                 cwd=working_dir,
-                env=fork_bomb_env
+                env=fork_bomb_env,
+                text=True,  # Enable text mode for easier log processing
+                bufsize=1   # Line buffering for immediate stderr output
             )
 
-            # Step 3: Wait for API to become available (with retries)
-            for attempt in range(12):  # 12 attempts over 6 seconds
+            logger.info(f"HeadlessPM process started with PID: {self._api_process.pid}")
+
+            # Step 3: Wait for API to become available (with enhanced monitoring)
+            startup_start_time = time.time()
+            for attempt in range(30):  # Increased from 12 to 30 attempts (15 seconds)
+                # Check if process died during startup
+                if self._api_process.poll() is not None:
+                    # Process died - capture stderr immediately (stdout is DEVNULL so will be empty)
+                    try:
+                        stdout, stderr = self._api_process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # Force kill if communicate hangs
+                        self._api_process.kill()
+                        stdout, stderr = self._api_process.communicate()
+                    
+                    exit_code = self._api_process.returncode
+                    
+                    logger.error(f"❌ CRITICAL: HeadlessPM process died during startup (exit code: {exit_code})")
+                    logger.error(f"❌ Process stderr: {stderr[:2000] if stderr else 'No stderr output'}")
+                    logger.error(f"❌ Command: {' '.join(headless_pm_cmd)}")
+                    logger.error(f"❌ Working directory: {working_dir}")
+                    logger.error(f"❌ Environment variables: SERVICE_PORT={fork_bomb_env.get('SERVICE_PORT')}")
+                    
+                    # Log to stderr for immediate visibility
+                    print(f"❌ HeadlessPM startup failed: {stderr[:200] if stderr else 'No error details'}", file=sys.stderr)
+                    
+                    self._api_process = None
+                    return False
+
                 try:
                     await asyncio.sleep(0.5)
                     response = await self.client.get(f"{self.base_url}/health", timeout=5.0)
                     if response.status_code == 200:
-                        logger.info("✅ Successfully started HeadlessPM API")
+                        startup_duration = time.time() - startup_start_time
+                        logger.info(f"✅ SUCCESS: HeadlessPM API started successfully in {startup_duration:.2f} seconds")
+                        logger.info(f"✅ Health check passed on attempt {attempt + 1}/30")
+                        logger.info(f"✅ API responding at {self.base_url}/health")
+                        
                         # Mark that WE started this API process
                         self._we_started_api = True
+                        
                         # Discover the actual server process PID for proper cleanup
                         port = int(os.environ.get("SERVICE_PORT", "6969"))
                         pid_info = self._find_api_server_pid(port)
                         if pid_info:
                             self._api_server_pid, self._api_server_start_time = pid_info
-                            logger.info(f"Discovered API server PID: {self._api_server_pid} (created: {self._api_server_start_time})")
+                            logger.info(f"✅ Discovered API server PID: {self._api_server_pid} (created: {self._api_server_start_time})")
                         else:
-                            logger.warning("Could not discover API server PID - cleanup may not work properly")
+                            logger.warning("⚠️ Could not discover API server PID - cleanup may not work properly")
+                        
+                        # Log successful startup to stderr for visibility
+                        print(f"✅ HeadlessPM API started successfully on port {port}", file=sys.stderr)
                         return True
-                except Exception:
+                        
+                except Exception as e:
+                    if attempt % 5 == 0:  # Log every 5th attempt to avoid spam
+                        elapsed = time.time() - startup_start_time
+                        logger.debug(f"Startup attempt {attempt + 1}/30 failed after {elapsed:.1f}s: {type(e).__name__}: {e}")
                     continue
 
-            # If we get here, startup failed
+            # If we get here, startup failed after all attempts
+            startup_duration = time.time() - startup_start_time
+            logger.error(f"❌ TIMEOUT: API startup failed after {startup_duration:.2f} seconds (30 attempts)")
+            
             if self._api_process.poll() is None:
-                logger.error(f"❌ API process started but not responding at {self.base_url}")
+                logger.error(f"❌ API process still running but not responding at {self.base_url}")
+                logger.error("❌ Terminating unresponsive process...")
+                try:
+                    # Try to get any available stderr before termination (stdout is DEVNULL)
+                    stdout, stderr = self._api_process.communicate(timeout=2)
+                    if stderr:
+                        logger.error(f"❌ Process stderr before termination: {stderr[:1000]}")
+                except subprocess.TimeoutExpired:
+                    logger.error("❌ Timeout getting process output, force-terminating")
+                    
                 self._api_process.terminate()
+                try:
+                    self._api_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._api_process.kill()
             else:
-                logger.error("❌ API process exited during startup")
+                logger.error("❌ API process exited during startup attempts")
+                # Get final stderr if available (stdout is DEVNULL)
+                try:
+                    stdout, stderr = self._api_process.communicate(timeout=1)
+                    if stderr:
+                        logger.error(f"❌ Final process stderr: {stderr[:1000]}")
+                except:
+                    pass
 
             self._api_process = None
             return False
