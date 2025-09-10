@@ -100,20 +100,27 @@ class DeterministicPortManager:
     
     @staticmethod
     def allocate_port(test_identifier: str, base_port: int = 10000, 
-                     port_range: int = 50000) -> int:
+                     port_range: int = 50000, legacy_compatible: bool = False) -> int:
         """
-        Allocate deterministic port using cryptographic hash.
+        Allocate deterministic port using cryptographic hash or legacy hash for compatibility.
         
         Args:
             test_identifier: Unique test identifier (class::method)
             base_port: Starting port number
             port_range: Range of available ports
+            legacy_compatible: Use legacy hash() for backwards compatibility with existing tests
             
         Returns:
             Deterministic port number for this test
         """
-        hash_value = int(hashlib.sha256(test_identifier.encode()).hexdigest()[:8], 16)
-        port = base_port + (hash_value % port_range)
+        if legacy_compatible:
+            # Use original hash() function for backwards compatibility with existing test logic
+            hash_value = abs(hash(test_identifier)) % port_range
+        else:
+            # Use cryptographic hash for better distribution
+            hash_value = int(hashlib.sha256(test_identifier.encode()).hexdigest()[:8], 16) % port_range
+            
+        port = base_port + hash_value
         
         # Avoid system reserved ports
         if port < 1024:

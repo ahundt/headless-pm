@@ -1,0 +1,125 @@
+=== 30x INSTRUMENTED DIAGNOSTIC TEST RUN ===
+Running instrumented test to capture 10% failure rate diagnostics
+Start time: Mon Sep  8 02:52:02 EDT 2025
+Instrumented run 1: PASSED
+Instrumented run 2: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 3: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 4: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025210.json
+  Failure type: API startup timeout
+Instrumented run 5: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025212.json
+  Failure type: API startup timeout
+Instrumented run 6: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025214.json
+  Failure type: API startup timeout
+Instrumented run 7: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025216.json
+  Failure type: API startup timeout
+Instrumented run 8: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025219.json
+  Failure type: API startup timeout
+Instrumented run 9: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 10: PASSED
+Progress: 10/30 completed, 2 successes, 8 failures
+Current failure rate: 80.0%
+Captured diagnostic files: 8
+Instrumented run 11: PASSED
+Instrumented run 12: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025226.json
+  Failure type: API startup timeout
+Instrumented run 13: PASSED
+Instrumented run 14: PASSED
+Instrumented run 15: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025232.json
+  Failure type: API startup timeout
+Instrumented run 16: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025234.json
+  Failure type: API startup timeout
+Instrumented run 17: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 18: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025238.json
+  Failure type: API startup timeout
+Instrumented run 19: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025240.json
+  Failure type: API startup timeout
+Instrumented run 20: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025243.json
+  Failure type: API startup timeout
+Progress: 20/30 completed, 5 successes, 15 failures
+Current failure rate: 75.0%
+Captured diagnostic files: 15
+Instrumented run 21: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025245.json
+  Failure type: API startup timeout
+Instrumented run 22: PASSED
+Instrumented run 23: PASSED
+Instrumented run 24: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 25: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_*.json
+  Failure type: API startup timeout
+Instrumented run 26: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025254.json
+  Failure type: API startup timeout
+Instrumented run 27: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025257.json
+  Failure type: API startup timeout
+Instrumented run 28: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025259.json
+  Failure type: API startup timeout
+Instrumented run 29: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025301.json
+  Failure type: API startup timeout
+Instrumented run 30: FAILED
+  Diagnostic file saved: /tmp/test_diagnostics_20250908_025303.json
+  Failure type: API startup timeout
+Progress: 30/30 completed, 7 successes, 23 failures
+Current failure rate: 76.6%
+Captured diagnostic files: 23
+
+=== INSTRUMENTED TEST RESULTS ===
+Total runs: 30
+Successful runs: 7
+Failed runs: 23
+Actual failure rate: 76.66%
+Diagnostic files captured: 23
+End time: Mon Sep  8 02:53:03 EDT 2025
+
+=== DIAGNOSTIC FILES FOR ANALYSIS ===
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_20250908_025210.json
+  /tmp/test_diagnostics_20250908_025212.json
+  /tmp/test_diagnostics_20250908_025214.json
+  /tmp/test_diagnostics_20250908_025216.json
+  /tmp/test_diagnostics_20250908_025219.json
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_20250908_025226.json
+  /tmp/test_diagnostics_20250908_025232.json
+  /tmp/test_diagnostics_20250908_025234.json
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_20250908_025238.json
+  /tmp/test_diagnostics_20250908_025240.json
+  /tmp/test_diagnostics_20250908_025243.json
+  /tmp/test_diagnostics_20250908_025245.json
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_*.json
+  /tmp/test_diagnostics_20250908_025254.json
+  /tmp/test_diagnostics_20250908_025257.json
+  /tmp/test_diagnostics_20250908_025259.json
+  /tmp/test_diagnostics_20250908_025301.json
+  /tmp/test_diagnostics_20250908_025303.json
+
+=== FAILURE ANALYSIS SUMMARY ===
+Analyzing first failure: /tmp/test_diagnostics_*.json
+Failed to analyze diagnostic file: [Errno 2] No such file or directory: '/tmp/test_diagnostics_*.json'

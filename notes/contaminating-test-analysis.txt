@@ -1,0 +1,121 @@
+=== 100x ISOLATION TEST ON CONTAMINATING TEST: test_api_functionality_with_http_client ===
+Testing the contamination source in isolation
+Start time: Sun Sep  7 18:42:05 EDT 2025
+Contaminator run 1: PASSED
+Contaminator run 2: PASSED
+Contaminator run 3: PASSED
+Contaminator run 4: PASSED
+Contaminator run 5: PASSED
+Contaminator run 6: PASSED
+Contaminator run 7: PASSED
+Contaminator run 8: PASSED
+Contaminator run 9: PASSED
+Contaminator run 10: PASSED
+Contaminator run 11: PASSED
+Contaminator run 12: PASSED
+Contaminator run 13: PASSED
+Contaminator run 14: PASSED
+Contaminator run 15: PASSED
+Contaminator run 16: PASSED
+Contaminator run 17: PASSED
+Contaminator run 18: FAILED
+=== FIRST CONTAMINATOR FAILURE DETAILS ===
+=== END FAILURE DETAILS ===
+Contaminator run 19: PASSED
+Contaminator run 20: PASSED
+Contaminator run 21: PASSED
+Contaminator run 22: PASSED
+Contaminator run 23: PASSED
+Contaminator run 24: PASSED
+Contaminator run 25: PASSED
+Progress: 25/100 completed, 24 successes, 1 failures
+Current contaminator failure rate: 4.0%
+Contaminator run 26: PASSED
+Contaminator run 27: PASSED
+Contaminator run 28: PASSED
+Contaminator run 29: PASSED
+Contaminator run 30: PASSED
+Contaminator run 31: PASSED
+Contaminator run 32: PASSED
+Contaminator run 33: PASSED
+Contaminator run 34: PASSED
+Contaminator run 35: PASSED
+Contaminator run 36: FAILED
+Contaminator run 37: FAILED
+Contaminator run 38: PASSED
+Contaminator run 39: PASSED
+Contaminator run 40: FAILED
+Contaminator run 41: PASSED
+Contaminator run 42: PASSED
+Contaminator run 43: PASSED
+Contaminator run 44: FAILED
+Contaminator run 45: PASSED
+Contaminator run 46: PASSED
+Contaminator run 47: PASSED
+Contaminator run 48: PASSED
+Contaminator run 49: PASSED
+Contaminator run 50: PASSED
+Progress: 50/100 completed, 45 successes, 5 failures
+Current contaminator failure rate: 10.0%
+Contaminator run 51: PASSED
+Contaminator run 52: PASSED
+Contaminator run 53: PASSED
+Contaminator run 54: PASSED
+Contaminator run 55: PASSED
+Contaminator run 56: PASSED
+Contaminator run 57: PASSED
+Contaminator run 58: PASSED
+Contaminator run 59: PASSED
+Contaminator run 60: PASSED
+Contaminator run 61: PASSED
+Contaminator run 62: PASSED
+Contaminator run 63: PASSED
+Contaminator run 64: PASSED
+Contaminator run 65: PASSED
+Contaminator run 66: PASSED
+Contaminator run 67: PASSED
+Contaminator run 68: PASSED
+Contaminator run 69: PASSED
+Contaminator run 70: PASSED
+Contaminator run 71: PASSED
+Contaminator run 72: PASSED
+Contaminator run 73: FAILED
+Contaminator run 74: PASSED
+Contaminator run 75: PASSED
+Progress: 75/100 completed, 69 successes, 6 failures
+Current contaminator failure rate: 8.0%
+Contaminator run 76: FAILED
+Contaminator run 77: FAILED
+Contaminator run 78: PASSED
+Contaminator run 79: PASSED
+Contaminator run 80: FAILED
+Contaminator run 81: PASSED
+Contaminator run 82: PASSED
+Contaminator run 83: PASSED
+Contaminator run 84: PASSED
+Contaminator run 85: PASSED
+Contaminator run 86: PASSED
+Contaminator run 87: PASSED
+Contaminator run 88: PASSED
+Contaminator run 89: PASSED
+Contaminator run 90: FAILED
+Contaminator run 91: PASSED
+Contaminator run 92: PASSED
+Contaminator run 93: PASSED
+Contaminator run 94: PASSED
+Contaminator run 95: PASSED
+Contaminator run 96: PASSED
+Contaminator run 97: PASSED
+Contaminator run 98: PASSED
+Contaminator run 99: PASSED
+Contaminator run 100: PASSED
+Progress: 100/100 completed, 90 successes, 10 failures
+Current contaminator failure rate: 10.0%
+
+=== CONTAMINATING TEST RESULTS ===
+Test: test_api_functionality_with_http_client
+Total isolation runs: 100
+Successful runs: 90
+Failed runs: 10
+Isolation failure rate: 10.00%
+End time: Sun Sep  7 18:51:27 EDT 2025
