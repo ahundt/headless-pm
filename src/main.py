@@ -92,12 +92,13 @@ def is_port_available(port):
 
 
 def cleanup_dashboard():
-    """Clean up dashboard process on exit"""
+    """Clean up dashboard process on exit with proper coordination cleanup time"""
     global dashboard_process
     if dashboard_process and dashboard_process.poll() is None:
         try:
+            # Proper graceful shutdown sequence for dashboard
             dashboard_process.terminate()
-            dashboard_process.wait(timeout=5)
+            dashboard_process.wait(timeout=10)  # Consistent with coordination cleanup
         except (subprocess.TimeoutExpired, Exception):
             try:
                 dashboard_process.kill()
@@ -107,9 +108,18 @@ def cleanup_dashboard():
         dashboard_process = None
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully"""
+    """Handle shutdown signals gracefully with coordination cleanup"""
+    # 1. Unregister API process from coordination
+    try:
+        from src.utils.coordination import unregister_api_process
+        unregister_api_process()
+    except Exception:
+        pass  # Continue cleanup even if coordination fails
+        
+    # 2. Clean up dashboard process
     cleanup_dashboard()
-    # Re-raise the signal to allow normal shutdown
+    
+    # 3. Re-raise the signal to allow normal shutdown
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
@@ -176,9 +186,23 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     await health_checker.start()
     
+    # Register API process in coordination system
+    try:
+        from src.utils.coordination import register_api_process
+        register_api_process()
+    except Exception:
+        pass  # Continue startup even if coordination registration fails
+    
     yield
     
     # Shutdown
+    # Unregister API process from coordination
+    try:
+        from src.utils.coordination import unregister_api_process
+        unregister_api_process()
+    except Exception:
+        pass
+        
     cleanup_dashboard()
     await health_checker.stop()
 
