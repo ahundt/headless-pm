@@ -108,13 +108,13 @@ def cleanup_dashboard():
         dashboard_process = None
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully with coordination cleanup"""
-    # 1. Unregister API process from coordination
+    """Handle shutdown signals gracefully with process registry cleanup"""
+    # 1. Unregister API server from process registry
     try:
-        from src.utils.coordination import unregister_api_process
-        unregister_api_process()
+        from src.utils.process_registry import unregister_api_server
+        unregister_api_server()
     except Exception:
-        pass  # Continue cleanup even if coordination fails
+        pass  # Continue cleanup even if registry unregistration fails
         
     # 2. Clean up dashboard process
     cleanup_dashboard()
@@ -186,20 +186,20 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     await health_checker.start()
     
-    # Register API process in coordination system
+    # Register API server in process registry
     try:
-        from src.utils.coordination import register_api_process
-        register_api_process()
+        from src.utils.process_registry import register_api_server
+        register_api_server()
     except Exception:
-        pass  # Continue startup even if coordination registration fails
+        pass  # Continue startup even if registry registration fails
     
     yield
     
     # Shutdown
-    # Unregister API process from coordination
+    # Unregister API server from process registry  
     try:
-        from src.utils.coordination import unregister_api_process
-        unregister_api_process()
+        from src.utils.process_registry import unregister_api_server
+        unregister_api_server()
     except Exception:
         pass
         
