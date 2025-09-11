@@ -160,7 +160,7 @@ class ProcessTreeLeakDetective:
             print(f"[PROCESS MANAGER] ❌ Failed to start {test_name}: {e}")
             raise
     
-    def stop_managed_process(self, proc: subprocess.Popen, timeout: float = 5.0) -> bool:
+    def stop_managed_process(self, proc: subprocess.Popen, timeout: float = 10.0) -> bool:
         """
         Stop process with robust terminate-wait-kill pattern.
         
@@ -181,11 +181,11 @@ class ProcessTreeLeakDetective:
             
             print(f"[PROCESS MANAGER] Stopping {test_name} process {proc.pid}...")
             
-            # Close stdin first for MCP servers
+            # 1. Close stdin first to signal graceful shutdown for MCP servers
             if proc.stdin and not proc.stdin.closed:
                 proc.stdin.close()
                 
-            # Graceful termination
+            # 2. Send SIGTERM to trigger signal handlers and coordination cleanup
             proc.terminate()
             
             try:

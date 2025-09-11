@@ -226,9 +226,10 @@ class TestHeadlessPMClient(unittest.TestCase):
         # Clean up API server using ServerManager pattern
         print(f"\nStopping API server on port {cls.server_manager.port}...")
         if hasattr(cls, 'api_process') and cls.api_process.poll() is None:
+            # Proper graceful shutdown for API server
             cls.api_process.terminate()
             try:
-                cls.api_process.wait(timeout=5)
+                cls.api_process.wait(timeout=10)  # Consistent with MCP coordination cleanup
             except subprocess.TimeoutExpired:
                 cls.api_process.kill()
                 cls.api_process.wait()
