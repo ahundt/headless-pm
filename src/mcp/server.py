@@ -614,7 +614,7 @@ class HeadlessPMMCPServer:
             # Use port discovery for uvicorn commands but handle import carefully
             try:
                 from src.main import get_port
-                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+                service_port = str(get_port(6969, env_override="SERVICE_PORT"))
             except ImportError:
                 # Fallback if import fails (e.g., in test subprocess)
                 service_port = os.environ.get("SERVICE_PORT", "6969")
@@ -630,7 +630,7 @@ class HeadlessPMMCPServer:
             # Normal discovery order for non-MCP contexts - prioritize port-aware commands
             try:
                 from src.main import get_port
-                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+                service_port = str(get_port(6969, env_override="SERVICE_PORT"))
             except ImportError:
                 service_port = os.environ.get("SERVICE_PORT", "6969")
                 
@@ -665,7 +665,7 @@ class HeadlessPMMCPServer:
             # Use port discovery for project uvicorn commands with fallback
             try:
                 from src.main import get_port
-                service_port = str(get_port("SERVICE_PORT", 6969, quiet=True))
+                service_port = str(get_port(6969, env_override="SERVICE_PORT"))
             except ImportError:
                 service_port = os.environ.get("SERVICE_PORT", "6969")
             candidates.extend([

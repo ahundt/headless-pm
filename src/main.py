@@ -37,95 +37,48 @@ def find_available_port(start_port, max_attempts=50):
     # Fallback to original port if all attempts fail
     return start_port
 
-def get_port(env_var=None, default_port=None, auto_discover=True, 
-             deterministic_id=None, service_name=None, quiet=False):
-    """Universal port allocation with configurable behavior and deterministic mode.
+def get_port(default_port, instance_id=None, env_override=None):
+    """
+    Universal port allocation - easy to use correctly, hard to use incorrectly.
     
     Args:
-        env_var: Environment variable to check (e.g., 'SERVICE_PORT') 
-        default_port: Default port to try (required if env_var not set)
-        auto_discover: If True, find alternative port when default/env port occupied
-        deterministic_id: If provided, use deterministic allocation based on this ID
-        service_name: Service name for user messages (auto-derived if not provided)
-        quiet: If True, suppress user feedback messages
+        default_port: Port to request (required - forces explicit choice)
+        instance_id: Optional ID for deterministic allocation (containers, CI, reproducible deployments)  
+        env_override: Optional environment variable name to check first (e.g., 'SERVICE_PORT')
         
     Returns:
-        int: Available port number
+        int: Available port (requested port if free, alternative if occupied)
         
-    Usage patterns:
-        # Production use (existing patterns preserved)
-        port = get_port("SERVICE_PORT", 6969)
-        port = get_port("SERVICE_PORT", 6969, auto_discover=False)  # Strict mode
-        port = get_port(default_port=8000)
-        port = get_port("MCP_PORT", 6968, quiet=True)
+    Usage:
+        # Simple allocation
+        port = get_port(6969)
         
-        # Deterministic allocation (for tests, automation, reproducible deployments)
-        port = get_port(default_port=9000, deterministic_id="test-instance-1")
-        port = get_port("SERVICE_PORT", 6969, deterministic_id="repo-branch-abc")
+        # Production with environment support  
+        port = get_port(6969, env_override='SERVICE_PORT')
+        
+        # Deterministic allocation (tests, containers, CI)
+        port = get_port(9000, instance_id='my-app-instance-1')
+        
+        # Combined (environment takes priority over deterministic)
+        port = get_port(6969, instance_id='branch-abc', env_override='SERVICE_PORT')
     """
-    if not env_var and default_port is None:
-        raise ValueError("Must provide either env_var or default_port")
-    
-    # Deterministic allocation mode
-    if deterministic_id:
-        base_port = default_port or 9000
-        # Generate deterministic offset using hash
-        hash_offset = abs(hash(deterministic_id)) % 1000
-        deterministic_port = base_port + hash_offset
-        
-        # Check environment variable first (higher priority)
-        if env_var and env_var in os.environ:
-            requested_port = int(os.environ[env_var])
-            if is_port_available(requested_port):
-                return requested_port
-            elif auto_discover:
-                return find_available_port(requested_port)
-            else:
-                return requested_port
-        
-        # Use deterministic port with auto-discovery if needed
-        if is_port_available(deterministic_port):
-            return deterministic_port
-        elif auto_discover:
-            return find_available_port(deterministic_port)
-        else:
-            return deterministic_port
-    
-    service_display = service_name or (env_var.replace('_PORT', '').lower() if env_var else f"port-{default_port}")
-    
     # 1. Environment variable takes highest priority
-    if env_var and env_var in os.environ:
-        requested_port = int(os.environ[env_var])
-        if is_port_available(requested_port):
-            return requested_port
-        elif auto_discover:
-            if not quiet:
-                print(f"⚠️  {service_display} port {requested_port} from {env_var} is occupied")
-            discovered_port = find_available_port(requested_port)
-            if not quiet:
-                print(f"✅ Using {service_display} port {discovered_port}")
-            return discovered_port
-        else:
-            # Strict mode - return requested port even if occupied (let caller handle)
-            return requested_port
+    if env_override and env_override in os.environ:
+        try:
+            env_port = int(os.environ[env_override])
+            return env_port if is_port_available(env_port) else find_available_port(env_port)
+        except (ValueError, TypeError):
+            pass  # Invalid env value, continue with other methods
     
-    # 2. Try default port if provided
-    if default_port is not None:
-        if is_port_available(default_port):
-            return default_port
-        elif auto_discover:
-            if not quiet:
-                print(f"ℹ️  Default {service_display} port {default_port} occupied, discovering alternative...")
-            discovered_port = find_available_port(default_port)
-            if not quiet:
-                print(f"✅ Using {service_display} port {discovered_port}")
-            return discovered_port
-        else:
-            # Strict mode - return default even if occupied
-            return default_port
+    # 2. Deterministic allocation if instance_id provided
+    if instance_id:
+        hash_offset = abs(hash(instance_id)) % 1000
+        target_port = default_port + hash_offset
+    else:
+        target_port = default_port
     
-    # 3. Should not reach here given input validation
-    raise ValueError("No port determination method available")
+    # 3. Return target port or find alternative if occupied
+    return target_port if is_port_available(target_port) else find_available_port(target_port)
 
 def is_port_available(port):
     """Check if a specific port is available for binding."""
@@ -136,6 +89,7 @@ def is_port_available(port):
             return True
     except OSError:
         return False
+
 
 def cleanup_dashboard():
     """Clean up dashboard process on exit"""
@@ -183,7 +137,7 @@ def start_dashboard_if_available():
     global dashboard_process
     
     # Use auto-discovery for dashboard port  
-    dashboard_port = get_port("DASHBOARD_PORT", 3001)
+    dashboard_port = get_port(3001, env_override="DASHBOARD_PORT")
     auto_start = os.getenv("HEADLESS_PM_AUTO_DASHBOARD", "true").lower() == "true"
     
     if not auto_start:
@@ -400,8 +354,8 @@ def main():
     dashboard_process = start_dashboard_if_available()
     
     # Get ports with auto-discovery
-    port = get_port("SERVICE_PORT", 6969)
-    dashboard_port = get_port("DASHBOARD_PORT", 3001)
+    port = get_port(6969, env_override="SERVICE_PORT")
+    dashboard_port = get_port(3001, env_override="DASHBOARD_PORT")
     
     # Update environment for dashboard process
     os.environ["DASHBOARD_PORT"] = str(dashboard_port)
