@@ -558,7 +558,7 @@ class TestRaceConditionDetector:
     async def test_signal_handler_behavior(self):
         """Specifically test signal handler behavior in subprocess."""
         from src.main import get_port
-        test_port = get_port(default_port=8000, auto_discover=True, quiet=True)
+        test_port = get_port(8000, instance_id="TestRaceConditionDetector::method")
         detector = RaceConditionDetector(test_port=test_port)
         
         try:
@@ -592,7 +592,7 @@ class TestRaceConditionDetector:
     async def test_coordination_file_atomicity(self):
         """Test coordination file operations for race conditions."""
         from src.main import get_port
-        test_port = get_port(default_port=8000, auto_discover=True, quiet=True)
+        test_port = get_port(8000, instance_id="TestRaceConditionDetector::method")
         detector = RaceConditionDetector(test_port=test_port)
         
         try:
