@@ -102,15 +102,20 @@ class ServerManager:
         return False
 
     def cleanup_process(self, proc: subprocess.Popen):
-        """Safely cleanup a single process."""
+        """Safely cleanup a single process with proper coordination cleanup time."""
         if proc.poll() is None:  # Process still running
             try:
-                # Close stdin first to signal graceful shutdown for stdio servers
+                # 1. Close stdin first to signal graceful shutdown for MCP servers
                 if proc.stdin and not proc.stdin.closed:
                     proc.stdin.close()
+                    
+                # 2. Send SIGTERM to trigger signal handlers
                 proc.terminate()
-                proc.wait(timeout=5)
+                
+                # 3. Allow time for MCP coordination cleanup (increased timeout)
+                proc.wait(timeout=10)  # Increased from 5s for coordination
             except subprocess.TimeoutExpired:
+                # 4. Force kill only if coordination cleanup times out
                 proc.kill()
                 proc.wait()
             except Exception:

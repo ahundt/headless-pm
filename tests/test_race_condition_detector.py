@@ -28,17 +28,24 @@ class RaceConditionDetector:
         self.test_results: List[Dict] = []
         
     async def cleanup(self):
-        """Clean up all test processes and files."""
-        # Terminate all processes
+        """Clean up all test processes with proper MCP coordination cleanup."""
+        # Terminate all processes with proper coordination cleanup
         for proc in self.processes:
             if proc.poll() is None:
                 try:
-                    if proc.stdin:
+                    # 1. Signal graceful shutdown for MCP servers
+                    if proc.stdin and not proc.stdin.closed:
                         proc.stdin.close()
+                        
+                    # 2. Send SIGTERM to trigger signal handlers  
                     proc.terminate()
-                    proc.wait(timeout=3)
+                    
+                    # 3. Allow time for MCP coordination cleanup
+                    proc.wait(timeout=10)  # Increased from 3s for coordination
                 except subprocess.TimeoutExpired:
+                    # 4. Force kill only if coordination cleanup fails
                     proc.kill()
+                    proc.wait()
                 except Exception:
                     pass
         self.processes.clear()
