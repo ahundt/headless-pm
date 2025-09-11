@@ -19,9 +19,10 @@ except ImportError:
     HAS_PSUTIL = False
 
 try:
-    from src.utils.atomic_file_ops import AtomicFileOperations
+    from src.utils.atomic_file_ops import AtomicFileOperations, with_coordination_lock
 except ImportError:
     AtomicFileOperations = None
+    with_coordination_lock = None
 
 
 def get_process_registry_path(service_port: str = None) -> Path:
@@ -103,9 +104,24 @@ def unregister_api_server() -> bool:
         
         return data
     
-    try:
+    def coordinated_api_unregister():
+        """Perform API unregistration with coordination lock like MCP server."""
         AtomicFileOperations.atomic_json_update(registry_file, unregister_api_pid, {})
         return True
+    
+    try:
+        # Use coordination lock matching MCP server pattern (line 817-820 in mcp/server.py)
+        if with_coordination_lock:
+            return with_coordination_lock(
+                f"api_shutdown_{port}",
+                coordinated_api_unregister,
+                timeout=10,
+                description="API server unregistration"
+            )
+        else:
+            # Fallback without locks if unavailable
+            AtomicFileOperations.atomic_json_update(registry_file, unregister_api_pid, {})
+            return True
     except Exception:
         return False
 
