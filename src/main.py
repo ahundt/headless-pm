@@ -37,13 +37,15 @@ def find_available_port(start_port, max_attempts=50):
     # Fallback to original port if all attempts fail
     return start_port
 
-def get_port(env_var=None, default_port=None, auto_discover=True, service_name=None, quiet=False):
-    """Universal port allocation with configurable behavior.
+def get_port(env_var=None, default_port=None, auto_discover=True, 
+             deterministic_id=None, service_name=None, quiet=False):
+    """Universal port allocation with configurable behavior and deterministic mode.
     
     Args:
         env_var: Environment variable to check (e.g., 'SERVICE_PORT') 
         default_port: Default port to try (required if env_var not set)
         auto_discover: If True, find alternative port when default/env port occupied
+        deterministic_id: If provided, use deterministic allocation based on this ID
         service_name: Service name for user messages (auto-derived if not provided)
         quiet: If True, suppress user feedback messages
         
@@ -51,20 +53,43 @@ def get_port(env_var=None, default_port=None, auto_discover=True, service_name=N
         int: Available port number
         
     Usage patterns:
-        # Basic auto-discovery (most common)
+        # Production use (existing patterns preserved)
         port = get_port("SERVICE_PORT", 6969)
-        
-        # Strict mode (fail if occupied)  
-        port = get_port("SERVICE_PORT", 6969, auto_discover=False)
-        
-        # Just find any available port
+        port = get_port("SERVICE_PORT", 6969, auto_discover=False)  # Strict mode
         port = get_port(default_port=8000)
-        
-        # Quiet mode for internal use
         port = get_port("MCP_PORT", 6968, quiet=True)
+        
+        # Deterministic allocation (for tests, automation, reproducible deployments)
+        port = get_port(default_port=9000, deterministic_id="test-instance-1")
+        port = get_port("SERVICE_PORT", 6969, deterministic_id="repo-branch-abc")
     """
     if not env_var and default_port is None:
         raise ValueError("Must provide either env_var or default_port")
+    
+    # Deterministic allocation mode
+    if deterministic_id:
+        base_port = default_port or 9000
+        # Generate deterministic offset using hash
+        hash_offset = abs(hash(deterministic_id)) % 1000
+        deterministic_port = base_port + hash_offset
+        
+        # Check environment variable first (higher priority)
+        if env_var and env_var in os.environ:
+            requested_port = int(os.environ[env_var])
+            if is_port_available(requested_port):
+                return requested_port
+            elif auto_discover:
+                return find_available_port(requested_port)
+            else:
+                return requested_port
+        
+        # Use deterministic port with auto-discovery if needed
+        if is_port_available(deterministic_port):
+            return deterministic_port
+        elif auto_discover:
+            return find_available_port(deterministic_port)
+        else:
+            return deterministic_port
     
     service_display = service_name or (env_var.replace('_PORT', '').lower() if env_var else f"port-{default_port}")
     

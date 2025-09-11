@@ -511,10 +511,9 @@ class TestRaceConditionDetector:
     async def test_reliable_race_condition_detection(self):
         """Reliably detect and report coordination race conditions."""
         from src.main import get_port
-        # Generate unique base port for test isolation
         test_identifier = "TestRaceConditionDetector::test_reliable_race_condition_detection"
-        base_port = 8000 + (abs(hash(test_identifier)) % 1000)
-        test_port = get_port(default_port=base_port, auto_discover=True, quiet=True)
+        test_port = get_port(default_port=8000, auto_discover=True, 
+                            deterministic_id=test_identifier, quiet=True)
         detector = RaceConditionDetector(test_port=test_port)
         
         try:
