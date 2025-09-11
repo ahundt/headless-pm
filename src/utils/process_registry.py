@@ -26,18 +26,18 @@ except ImportError:
 
 def get_process_registry_path(service_port: str = None) -> Path:
     """
-    Get process registry file path for HeadlessPM processes.
-    Uses SERVICE_PORT to create port-specific registry files.
+    Get existing MCP coordination file path - integrate with existing system.
+    Uses SAME file as MCP server coordination to prevent duplicate systems.
     
     Args:
         service_port: Port number for this HeadlessPM instance
         
     Returns:
-        Path to process registry file for this port
+        Path to existing MCP coordination file (integrates with api_pid field)
     """
     temp_dir = Path(tempfile.gettempdir())
     port = service_port or os.environ.get('SERVICE_PORT', '6969')
-    return temp_dir / f"headless_pm_processes_{port}.json"
+    return temp_dir / f"headless_pm_mcp_clients_{port}.json"  # Use EXISTING MCP coordination file
 
 
 def register_api_server() -> bool:
@@ -57,16 +57,16 @@ def register_api_server() -> bool:
     
     def register_api_pid(data: Dict) -> Dict:
         """Register API server PID in process registry."""
-        # Clean existing stale API PID
-        existing_api_pid = data.get('api_server_pid')
+        # Clean existing stale API PID using existing field
+        existing_api_pid = data.get('api_pid')  # Use existing field name
         if existing_api_pid and HAS_PSUTIL and not psutil.pid_exists(existing_api_pid):
-            data.pop('api_server_pid', None)
+            data.pop('api_pid', None)
             
-        # Register this API server
-        data['api_server_pid'] = current_pid
+        # Register this API server using EXISTING field from MCP coordination
+        data['api_pid'] = current_pid  # Use existing api_pid field
         
-        # Preserve MCP clients
-        data.setdefault('mcp_clients', {})
+        # Preserve MCP clients using EXISTING field name
+        data.setdefault('clients', {})
         
         return data
     
@@ -94,12 +94,12 @@ def unregister_api_server() -> bool:
     
     def unregister_api_pid(data: Dict) -> Dict:
         """Remove API server PID from registry if it matches current process."""
-        existing_api_pid = data.get('api_server_pid')
+        existing_api_pid = data.get('api_pid')
         if existing_api_pid == current_pid:
-            data.pop('api_server_pid', None)
+            data.pop('api_pid', None)
             
         # Preserve MCP clients
-        data.setdefault('mcp_clients', {})
+        data.setdefault('clients', {})
         
         return data
     
@@ -126,11 +126,11 @@ def cleanup_process_registry() -> bool:
     def cleanup_stale_processes(data: Dict) -> Dict:
         """Remove stale process entries and clean up empty registry."""
         # Check API server
-        api_pid = data.get('api_server_pid')
+        api_pid = data.get('api_pid')
         api_active = api_pid and HAS_PSUTIL and psutil.pid_exists(api_pid)
         
         # Check MCP clients
-        clients = data.get('mcp_clients', {})
+        clients = data.get('clients', {})
         active_clients = {}
         for client_id, info in clients.items():
             try:
@@ -143,9 +143,9 @@ def cleanup_process_registry() -> bool:
         # Update registry with only active processes
         cleaned_data = {}
         if api_active:
-            cleaned_data['api_server_pid'] = api_pid
+            cleaned_data['api_pid'] = api_pid
         if active_clients:
-            cleaned_data['mcp_clients'] = active_clients
+            cleaned_data['clients'] = active_clients
             
         return cleaned_data
     
@@ -155,7 +155,7 @@ def cleanup_process_registry() -> bool:
         )
         
         # Remove registry file if no active processes
-        if not result.get('api_server_pid') and not result.get('mcp_clients'):
+        if not result.get('api_pid') and not result.get('clients'):
             try:
                 registry_file.unlink()
             except:
@@ -184,9 +184,9 @@ def get_registry_status() -> Dict:
                 
             return {
                 'registry_file': str(registry_file),
-                'api_server_pid': data.get('api_server_pid'),
-                'mcp_client_count': len(data.get('mcp_clients', {})),
-                'mcp_clients': data.get('mcp_clients', {})
+                'api_pid': data.get('api_pid'),
+                'mcp_client_count': len(data.get('clients', {})),
+                'clients': data.get('clients', {})
             }
         else:
             return {
