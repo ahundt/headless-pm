@@ -123,11 +123,19 @@ class TestMCPAutoDiscovery:
         except Exception as e:
             print(f"Warning: lsof command failed during pre-flight check: {e}")
 
-        # Clean stale coordination file
-        coord_file = "/tmp/headless_pm_mcp_coordination.json"
+        # Clean stale coordination files for current test port
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        coord_file = f"{temp_dir}/headless_pm_mcp_clients_{unique_port}.json"
         if os.path.exists(coord_file):
             os.remove(coord_file)
-            print(f"[FIXTURE SETUP {method_name}]: Removed stale coordination file.")
+            print(f"[FIXTURE SETUP {method_name}]: Cleaned coordination file for port {unique_port}")
+            
+        # Also clean default coordination file to prevent cross-contamination
+        default_coord_file = f"{temp_dir}/headless_pm_mcp_clients_6969.json"
+        if os.path.exists(default_coord_file):
+            os.remove(default_coord_file)
+            print(f"[FIXTURE SETUP {method_name}]: Cleaned default coordination file")
 
         # Create and yield server manager
         manager = ServerManager(port=unique_port)
@@ -280,21 +288,32 @@ class TestMCPAutoDiscovery:
             # Verify API is still running (should be the original one)
             assert await self.is_api_running(server_manager), "API should still be running"
             
-            # MCP server should terminate cleanly when killed - implement robust cleanup
+            # MCP server should terminate cleanly - allow coordination cleanup time
             if mcp_process.poll() is None:
-                print(f"[CLEANUP] Terminating MCP process {mcp_process.pid}...")
+                print(f"[CLEANUP] Gracefully shutting down MCP process {mcp_process.pid}...")
+                
+                # 1. Signal graceful shutdown (close stdin for MCP servers)
+                if mcp_process.stdin and not mcp_process.stdin.closed:
+                    mcp_process.stdin.close()
+                    print(f"[CLEANUP] Closed stdin for graceful MCP shutdown")
+                
+                # 2. Send SIGTERM to trigger signal handlers and coordination cleanup
                 mcp_process.terminate()
+                print(f"[CLEANUP] Sent SIGTERM to trigger coordination cleanup")
+                
                 try:
-                    mcp_process.wait(timeout=5)
-                    print(f"[CLEANUP] ✅ Process {mcp_process.pid} terminated gracefully")
+                    # 3. Allow time for coordination unregistration  
+                    mcp_process.wait(timeout=10)  # Increased from 5s for coordination
+                    print(f"[CLEANUP] ✅ Process {mcp_process.pid} completed coordination cleanup")
                 except subprocess.TimeoutExpired:
-                    print(f"[CLEANUP] ⚠️ Process {mcp_process.pid} did not exit in time, force killing...")
+                    # 4. Force kill only if coordination cleanup fails
+                    print(f"[CLEANUP] ⚠️ MCP coordination cleanup timed out, force killing...")
                     mcp_process.kill()
                     try:
                         mcp_process.wait(timeout=2)
-                        print(f"[CLEANUP] ✅ Process {mcp_process.pid} force-killed successfully")
+                        print(f"[CLEANUP] ✅ Process {mcp_process.pid} force-killed")
                     except subprocess.TimeoutExpired:
-                        print(f"[CLEANUP] ❌ CRITICAL: Process {mcp_process.pid} could not be killed")
+                        print(f"[CLEANUP] ❌ CRITICAL: Process {mcp_process.pid} unkillable")
             
             # Original API should still be running
             assert await self.is_api_running(server_manager), "Original API should still be running"
@@ -571,21 +590,30 @@ class TestMCPAutoDiscovery:
                     assert response.status_code == 200, f"{test_name} endpoint should return 200, got {response.status_code}"
                 
         finally:
-            # ROBUST CLEANUP: Implement terminate-wait-kill pattern to prevent leaks
+            # ROBUST CLEANUP: Allow time for MCP coordination cleanup before force termination
             if mcp_process and mcp_process.poll() is None:
-                print(f"[TEARDOWN] Terminating MCP process {mcp_process.pid}...")
+                print(f"[TEARDOWN] Gracefully shutting down MCP process {mcp_process.pid}...")
+                
+                # 1. Signal graceful shutdown to MCP server (closes stdin)
+                if mcp_process.stdin and not mcp_process.stdin.closed:
+                    mcp_process.stdin.close()
+                    print(f"[TEARDOWN] Closed stdin for graceful MCP shutdown")
+                
+                # 2. Send SIGTERM for signal handler to trigger coordination cleanup
                 mcp_process.terminate()
+                print(f"[TEARDOWN] Sent SIGTERM to allow coordination cleanup")
+                
                 try:
-                    # Wait up to 5 seconds for graceful exit
-                    mcp_process.wait(timeout=5)
-                    print(f"[TEARDOWN] ✅ Process {mcp_process.pid} terminated gracefully")
+                    # 3. Wait longer for MCP coordination unregistration to complete
+                    mcp_process.wait(timeout=10)  # Increased from 5s to 10s
+                    print(f"[TEARDOWN] ✅ Process {mcp_process.pid} completed coordination cleanup gracefully")
                 except subprocess.TimeoutExpired:
-                    # If it doesn't exit, force kill it
-                    print(f"[TEARDOWN] ⚠️ Process {mcp_process.pid} did not exit in time, killing...")
+                    # 4. Force kill only if coordination cleanup times out
+                    print(f"[TEARDOWN] ⚠️ MCP coordination cleanup timed out, force killing...")
                     mcp_process.kill()
                     try:
                         mcp_process.wait(timeout=2)
-                        print(f"[TEARDOWN] ✅ Process {mcp_process.pid} force-killed successfully")
+                        print(f"[TEARDOWN] ✅ Process {mcp_process.pid} force-killed (coordination cleanup incomplete)")
                     except subprocess.TimeoutExpired:
                         print(f"[TEARDOWN] ❌ CRITICAL: Process {mcp_process.pid} could not be killed")
                         
