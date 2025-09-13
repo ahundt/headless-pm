@@ -100,7 +100,10 @@ def register_api_server() -> bool:
         if 'processes' not in data:
             data['processes'] = {}
             
-        # Register in new flat structure (PID as key prevents duplicates)
+        # Migrate to new structure immediately (no users to worry about)
+        data = migrate_legacy_structure(data)
+        
+        # Register in flat structure (PID as key prevents duplicates)
         data['processes'][str(current_pid)] = {
             'type': 'api_server',
             'started': time.time(),
@@ -110,9 +113,6 @@ def register_api_server() -> bool:
         
         # Set primary API for coordination
         data['primary_api'] = current_pid
-        
-        # Preserve legacy fields during migration (backward compatibility)
-        data.setdefault('clients', {})
         
         return data
     
