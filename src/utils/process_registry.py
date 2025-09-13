@@ -139,14 +139,29 @@ def unregister_api_server() -> bool:
     current_pid = os.getpid()
     
     def unregister_api_pid(data: Dict) -> Dict:
-        """Remove API server PID from registry if it matches current process."""
-        existing_api_pid = data.get('api_pid')
-        if existing_api_pid == current_pid:
-            data.pop('api_pid', None)
-            
-        # Preserve MCP clients
-        data.setdefault('clients', {})
+        """Remove API server from flat PID-keyed structure."""
+        # Migrate to flat structure first
+        data = migrate_legacy_structure(data)
         
+        current_pid_str = str(current_pid)
+        processes = data.get('processes', {})
+        
+        # Remove this process if it's registered as API server
+        if (current_pid_str in processes and 
+            processes[current_pid_str].get('type') == 'api_server'):
+            processes.pop(current_pid_str)
+            
+            # Update primary API if we removed the primary
+            if data.get('primary_api') == current_pid:
+                # Find another API server or clear primary
+                new_primary = None
+                for pid_str, info in processes.items():
+                    if info.get('type') == 'api_server':
+                        new_primary = int(pid_str)
+                        break
+                data['primary_api'] = new_primary
+        
+        data['processes'] = processes
         return data
     
     def coordinated_api_unregister():
@@ -233,30 +248,37 @@ def cleanup_process_registry() -> bool:
     registry_file = get_process_registry_path()
     
     def cleanup_stale_processes(data: Dict) -> Dict:
-        """Remove stale process entries and clean up empty registry."""
-        # Check API server
-        api_pid = data.get('api_pid')
-        api_active = api_pid and HAS_PSUTIL and psutil.pid_exists(api_pid)
+        """Remove stale processes from flat PID-keyed structure."""
+        # Migrate to flat structure first
+        data = migrate_legacy_structure(data)
         
-        # Check MCP clients
-        clients = data.get('clients', {})
-        active_clients = {}
-        for client_id, info in clients.items():
+        # Clean stale processes from flat structure
+        active_processes = {}
+        for pid_str, info in data.get('processes', {}).items():
             try:
-                pid = info.get('pid')
-                if pid and HAS_PSUTIL and psutil.pid_exists(pid):
-                    active_clients[client_id] = info
+                pid = int(pid_str)
+                if HAS_PSUTIL and psutil.pid_exists(pid):
+                    # Update heartbeat for active processes
+                    info['last_heartbeat'] = time.time()
+                    active_processes[pid_str] = info
             except:
-                pass
-                
-        # Update registry with only active processes
-        cleaned_data = {}
-        if api_active:
-            cleaned_data['api_pid'] = api_pid
-        if active_clients:
-            cleaned_data['clients'] = active_clients
-            
-        return cleaned_data
+                pass  # Remove invalid entries
+        
+        # Update primary API if current primary is dead
+        primary_api = data.get('primary_api')
+        if primary_api and (not HAS_PSUTIL or not psutil.pid_exists(primary_api)):
+            # Find another API server or clear primary
+            new_primary = None
+            for pid_str, info in active_processes.items():
+                if info.get('type') == 'api_server':
+                    new_primary = int(pid_str)
+                    break
+            data['primary_api'] = new_primary
+        
+        # Preserve other fields, update processes
+        data['processes'] = active_processes
+        
+        return data
     
     try:
         result = AtomicFileOperations.atomic_json_update(
@@ -291,11 +313,21 @@ def get_registry_status() -> Dict:
             with open(registry_file, 'r') as f:
                 data = json.load(f)
                 
+            # Migrate data for consistent viewing
+            data = migrate_legacy_structure(data)
+            
+            # Count processes by type
+            processes = data.get('processes', {})
+            api_servers = [pid for pid, info in processes.items() if info.get('type') == 'api_server']
+            mcp_clients = [pid for pid, info in processes.items() if info.get('type') == 'mcp_client']
+            
             return {
                 'registry_file': str(registry_file),
-                'api_pid': data.get('api_pid'),
-                'mcp_client_count': len(data.get('clients', {})),
-                'clients': data.get('clients', {})
+                'processes': processes,
+                'primary_api': data.get('primary_api'),
+                'api_servers': api_servers,
+                'mcp_clients': mcp_clients,
+                'total_processes': len(processes)
             }
         else:
             return {
