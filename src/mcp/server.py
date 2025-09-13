@@ -729,26 +729,29 @@ class HeadlessPMMCPServer:
         coordination_file = self._get_mcp_coordination_file()
         
         def add_client(data: Dict) -> Dict:
-            """Add this client to coordination data."""
-            # Clean up stale entries (processes that no longer exist)
-            active_clients = {}
-            for client_id, info in data.get('clients', {}).items():
-                try:
-                    pid = info.get('pid')
-                    if pid and HAS_PSUTIL and psutil.pid_exists(pid):
-                        active_clients[client_id] = info
-                except:
-                    pass  # Remove stale entries
+            """Add MCP client to flat PID-keyed structure."""
+            # Import required utilities for flat structure
+            from src.utils.process_registry import check_pid_conflict, migrate_legacy_structure
             
-            # Add this client
-            active_clients[self._client_id] = {
-                'pid': os.getpid(),
-                'timestamp': time.time()
+            # Migrate to flat structure immediately
+            data = migrate_legacy_structure(data)
+            
+            current_pid = os.getpid()
+            
+            # Check for PID conflicts
+            if check_pid_conflict(data, current_pid, 'mcp_client'):
+                logger.warning(f"PID {current_pid} already registered as API server - skipping MCP client registration")
+                return data  # Don't register if conflict
+            
+            # Register in flat structure
+            data.setdefault('processes', {})
+            data['processes'][str(current_pid)] = {
+                'type': 'mcp_client',
+                'client_id': self._client_id,
+                'started': time.time(),
+                'repository': os.getcwd(),
+                'last_heartbeat': time.time()
             }
-            
-            # Update data
-            data['clients'] = active_clients
-            data['api_pid'] = data.get('api_pid')  # Preserve existing API PID
             
             return data
         
@@ -758,10 +761,15 @@ class HeadlessPMMCPServer:
                 coordination_file, add_client, {'clients': {}}
             )
             
-            client_count = len(result.get('clients', {}))
-            should_start = client_count == 1
+            # Count MCP clients in new flat structure
+            processes = result.get('processes', {})
+            mcp_client_count = sum(1 for info in processes.values() if info.get('type') == 'mcp_client')
             
-            logger.info(f"Registered MCP client {self._client_id} ({client_count} total clients)")
+            # Should start API if this is the first MCP client and no API server exists
+            api_server_count = sum(1 for info in processes.values() if info.get('type') == 'api_server')
+            should_start = mcp_client_count == 1 and api_server_count == 0
+            
+            logger.info(f"Registered MCP client {self._client_id} ({mcp_client_count} total MCP clients, {api_server_count} API servers)")
             return should_start
             
         except Exception as e:
@@ -776,21 +784,23 @@ class HeadlessPMMCPServer:
         def coordinated_unregister():
             """Perform unregister with coordination lock."""
             def remove_client(data: Dict) -> Dict:
-                """Remove this client from coordination data."""
-                clients = data.get('clients', {})
-                clients.pop(self._client_id, None)
+                """Remove MCP client from flat PID-keyed structure."""
+                # Import required migration for flat structure
+                from src.utils.process_registry import migrate_legacy_structure
                 
-                # Clean up stale entries
-                active_clients = {}
-                for client_id, info in clients.items():
-                    try:
-                        pid = info.get('pid')
-                        if pid and HAS_PSUTIL and psutil.pid_exists(pid):
-                            active_clients[client_id] = info
-                    except:
-                        pass  # Remove stale entries
+                # Migrate to flat structure immediately
+                data = migrate_legacy_structure(data)
                 
-                data['clients'] = active_clients
+                # Remove from flat structure
+                current_pid_str = str(os.getpid())
+                processes = data.get('processes', {})
+                
+                # Remove this process if it's our MCP client
+                if (current_pid_str in processes and 
+                    processes[current_pid_str].get('client_id') == self._client_id):
+                    processes.pop(current_pid_str)
+                
+                data['processes'] = processes
                 return data
             
             # Atomic file update
@@ -798,10 +808,15 @@ class HeadlessPMMCPServer:
                 coordination_file, remove_client, {'clients': {}}
             )
             
-            client_count = len(result.get('clients', {}))
-            should_cleanup = client_count == 0
+            # Count remaining processes in flat structure
+            processes = result.get('processes', {})
+            mcp_client_count = sum(1 for info in processes.values() if info.get('type') == 'mcp_client')
+            api_server_count = sum(1 for info in processes.values() if info.get('type') == 'api_server')
             
-            logger.info(f"Unregistered MCP client {self._client_id} ({client_count} remaining clients)")
+            # Should cleanup API if no MCP clients remain and we started the API
+            should_cleanup = mcp_client_count == 0 and self._we_started_api
+            
+            logger.info(f"Unregistered MCP client {self._client_id} ({mcp_client_count} remaining MCP clients, {api_server_count} API servers)")
             
             # Remove coordination file if no clients remain
             if should_cleanup:
