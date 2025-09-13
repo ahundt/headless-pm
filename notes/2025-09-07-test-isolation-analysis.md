@@ -594,3 +594,267 @@ True DRY consolidation implemented - **ProcessTreeLeakDetective as central manag
 **Fix**: Add startup health checks and dependency validation
 
 **Priority**: Fix HeadlessPM startup reliability first - this is the core issue causing the 76.6% failure rate.
+
+---
+
+## 🔧 **KISS Process Coordination Fix Plan** (Final Implementation)
+
+### **Current Crisis Analysis**
+- **100x Validation**: 0% success rate (100/100 failures) 
+- **Same PID Issue**: PID 73261 registered as API + 3 MCP clients
+- **Bad JSON Structure**: Asymmetric design allows duplicate PIDs
+- **Architectural Regression**: From 99.3% (147/148) to 95.9% (142/148) reliability
+
+### **KISS Solution: Flat PID-Keyed Structure (Claude MD + Simple)**
+
+**HIGH-LEVEL GOAL**: Fix the 0% validation success rate by preventing same PID from registering as both API server and MCP clients through better data structure design.
+
+**OVERALL STRATEGY**: Keep all existing working code (atomic operations, coordination locks, error handling) and just add PID uniqueness validation and improved JSON structure.
+
+#### **Phase 1: JSON Structure Improvement (Make Duplicates Impossible)**
+
+**PHASE GOAL**: Replace the broken asymmetric JSON structure with a self-validating flat structure where duplicate PIDs are impossible by design.
+
+**PLAIN ENGLISH**: Instead of having separate places where the same PID can appear (api_pid field + clients object), use a single processes object where each PID gets exactly one entry. This makes the coordination file structure automatically prevent the core problem.
+**Current (Broken)**:
+```json
+{
+  "api_pid": 73261,
+  "clients": {"mcp_73261_...": {"pid": 73261}}  // SAME PID DUPLICATE!
+}
+```
+
+**New (Self-Validating)**:
+```json
+{
+  "processes": {
+    "73261": {"type": "api_server", "started": timestamp, "repository": "/path"},
+    "73262": {"type": "mcp_client", "started": timestamp, "client_id": "mcp_73262_..."}
+  },
+  "primary_api": 73261
+}
+```
+
+#### **Phase 2: Enhance src/utils/process_registry.py (Preserve Working Code)**
+
+**GOAL**: Fix the core issue where same PID (73261) registers as both API server and MCP clients by adding validation that prevents this at the data structure level.
+
+**WHY**: Current coordination allows invalid states where one process appears in multiple places, causing "2 total clients" contamination and MCP process death. The fix must prevent this while preserving all existing atomic operations and coordination lock functionality.
+
+**Step 2.1**: Add `check_pid_conflict()` function at line 43
+**PURPOSE**: Create a validation function that checks if a PID is already registered as a different process type, preventing the same process from registering multiple times.
+**WHAT IT SOLVES**: The root cause of PID 73261 appearing as both API and MCP client - this function will detect and prevent such conflicts before they happen.
+```python
+def check_pid_conflict(data: Dict, pid: int, process_type: str) -> bool:
+    """Check if PID already registered as different type."""
+    # Check existing processes object
+    for existing_pid_str, info in data.get('processes', {}).items():
+        existing_pid = int(existing_pid_str)
+        if existing_pid == pid and info.get('type') != process_type:
+            return True  # Conflict detected
+    
+    # Check legacy api_pid field during migration
+    legacy_api_pid = data.get('api_pid')
+    if legacy_api_pid == pid and process_type != 'api_server':
+        return True
+        
+    # Check legacy clients during migration
+    for client_info in data.get('clients', {}).values():
+        if client_info.get('pid') == pid and process_type != 'mcp_client':
+            return True
+    
+    return False  # No conflict
+```
+
+**Step 2.2**: Replace `register_api_pid()` function (lines 59-72) with new structure
+**PURPOSE**: Transform the asymmetric JSON structure into a flat, self-validating format where PID duplication is impossible by design.
+**WHAT IT SOLVES**: Current structure allows `{"api_pid": 73261, "clients": {"mcp_73261_...": {"pid": 73261}}}` - same PID appears twice. New structure makes this impossible because PID becomes the key.
+**HOW**: Change from separate api_pid field + clients object to unified processes object where each PID gets exactly one entry.
+```python
+def register_api_pid(data: Dict) -> Dict:
+    """Register API server in flat PID-keyed structure."""
+    current_pid = os.getpid()
+    
+    # Check for PID conflicts
+    if check_pid_conflict(data, current_pid, 'api_server'):
+        raise ValueError(f"PID {current_pid} already registered as different type")
+    
+    # Initialize new structure
+    if 'processes' not in data:
+        data['processes'] = {}
+        
+    # Register in new flat structure
+    data['processes'][str(current_pid)] = {
+        'type': 'api_server',
+        'started': time.time(),
+        'repository': os.getcwd(),
+        'last_heartbeat': time.time()
+    }
+    
+    # Set primary API
+    data['primary_api'] = current_pid
+    
+    # Remove legacy fields during migration
+    data.pop('api_pid', None)
+    
+    return data
+```
+
+**Step 2.3**: Add `migrate_legacy_structure()` function at line 80:
+```python
+def migrate_legacy_structure(data: Dict) -> Dict:
+    """Migrate old coordination format to new flat structure."""
+    if 'processes' in data:
+        return data  # Already new format
+        
+    new_data = {'processes': {}}
+    
+    # Migrate legacy api_pid
+    legacy_api_pid = data.get('api_pid')
+    if legacy_api_pid:
+        new_data['processes'][str(legacy_api_pid)] = {
+            'type': 'api_server',
+            'started': time.time(),
+            'repository': os.getcwd(),
+            'last_heartbeat': time.time()
+        }
+        new_data['primary_api'] = legacy_api_pid
+    
+    # Migrate legacy clients
+    for client_id, client_info in data.get('clients', {}).items():
+        pid = client_info.get('pid')
+        if pid and str(pid) not in new_data['processes']:
+            new_data['processes'][str(pid)] = {
+                'type': 'mcp_client',
+                'started': client_info.get('timestamp', time.time()),
+                'client_id': client_id,
+                'last_heartbeat': time.time()
+            }
+    
+    return new_data
+```
+
+**Step 2.4**: Update `cleanup_stale_processes()` function (lines 142-166) for new structure:
+```python
+def cleanup_stale_processes(data: Dict) -> Dict:
+    """Clean stale processes from flat PID-keyed structure."""
+    # Migrate first
+    data = migrate_legacy_structure(data)
+    
+    active_processes = {}
+    for pid_str, info in data.get('processes', {}).items():
+        pid = int(pid_str)
+        if HAS_PSUTIL and psutil.pid_exists(pid):
+            # Update heartbeat for active processes
+            info['last_heartbeat'] = time.time()
+            active_processes[pid_str] = info
+    
+    # Update primary API if current primary is dead
+    primary_api = data.get('primary_api')
+    if primary_api and not psutil.pid_exists(primary_api):
+        # Find another API server or clear primary
+        for pid_str, info in active_processes.items():
+            if info['type'] == 'api_server':
+                data['primary_api'] = int(pid_str)
+                break
+        else:
+            data.pop('primary_api', None)
+    
+    data['processes'] = active_processes
+    return data
+```
+
+#### **Phase 3: Update src/mcp/server.py Integration (Fix MCP Registration)**
+
+**GOAL**: Make MCP client registration use the same flat structure and conflict detection, preventing MCP clients from registering when their PID is already used by an API server.
+
+**WHY**: Current MCP registration doesn't check for conflicts with API processes, allowing the same PID to register as both types. This causes coordination confusion and process death during startup.
+
+**Step 3.1**: Update `_register_mcp_client()` function (line 727) to use new structure
+**PURPOSE**: Make MCP client registration compatible with the new flat PID-keyed structure and add conflict detection.
+**WHAT IT SOLVES**: Prevents situations where test process PID registers as both API server and MCP client, eliminating coordination state confusion.
+```python
+def add_client(data: Dict) -> Dict:
+    """Add MCP client to flat PID-keyed structure."""
+    from src.utils.process_registry import check_pid_conflict, migrate_legacy_structure
+    
+    # Migrate to new structure
+    data = migrate_legacy_structure(data)
+    
+    current_pid = os.getpid()
+    
+    # Check for conflicts
+    if check_pid_conflict(data, current_pid, 'mcp_client'):
+        raise ValueError(f"PID {current_pid} already registered as API server")
+    
+    # Register in new structure
+    data.setdefault('processes', {})
+    data['processes'][str(current_pid)] = {
+        'type': 'mcp_client',
+        'client_id': self._client_id,
+        'started': time.time(),
+        'last_heartbeat': time.time()
+    }
+    
+    return data
+```
+
+**Step 3.2**: Update `remove_client()` function (line 778) for new structure:
+```python
+def remove_client(data: Dict) -> Dict:
+    """Remove MCP client from flat structure."""
+    current_pid_str = str(os.getpid())
+    processes = data.get('processes', {})
+    
+    # Remove this process if it's registered as MCP client
+    if current_pid_str in processes and processes[current_pid_str].get('type') == 'mcp_client':
+        processes.pop(current_pid_str)
+    
+    data['processes'] = processes
+    return data
+```
+
+#### **Phase 4: Testing (Prove the Fix Works)**
+
+**GOAL**: Demonstrate that the flat PID-keyed structure and conflict detection actually solve the 0% validation success rate and prevent all forms of PID duplication.
+
+**WHY**: Need concrete proof that the architectural changes resolve the coordination contamination issues causing MCP process death and API startup failures in test suite context.
+
+**Step 4.1**: Create test in `tests/test_coordination_validation.py`
+**PURPOSE**: Write specific tests that verify PID conflict detection works correctly and same PID cannot register as multiple types.
+**WHAT IT PROVES**: That the core issue (PID 73261 as both API and MCP client) is definitively resolved by the new validation logic.
+```python
+def test_pid_conflict_prevention():
+    from src.utils.process_registry import check_pid_conflict
+    
+    data = {
+        'processes': {
+            '12345': {'type': 'api_server', 'started': time.time()}
+        }
+    }
+    
+    # Test conflict detection
+    assert check_pid_conflict(data, 12345, 'mcp_client') == True
+    assert check_pid_conflict(data, 12346, 'mcp_client') == False
+```
+
+**Step 4.2**: Validate coordination file at `/tmp/headless_pm_mcp_clients_{port}.json`:
+- Verify structure: `{"processes": {...}, "primary_api": ...}`
+- Verify no duplicate PIDs in processes object
+- Verify each PID has exactly one entry
+
+**Step 4.3**: Test command: `./run-100x-validation.sh` to measure improvement from 0%
+
+### **Implementation Benefits (KISS + Claude MD)**
+- **Flat structure**: PID as key makes duplicates impossible
+- **Symmetric design**: All processes have same rich structure format
+- **Self-validating**: JSON structure enforces uniqueness by design
+- **Repository aware**: Track which repo spawned each process
+- **Minimal changes**: Enhance existing code, don't rewrite
+- **Concrete naming**: Specific functions following Claude MD philosophy
+
+### **Success Criteria (Measurable)**
+- **Zero duplicate PIDs**: No PID appears in multiple coordination entries
+- **Restored baseline**: Return to 99.3% reliability (147/148 passed)
+- **100x validation improvement**: From 0% to >95% success rate
+- **Repository isolation**: Different repos don't interfere with each other

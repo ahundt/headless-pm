@@ -8,6 +8,7 @@ Hard to use incorrectly: Atomic operations prevent corruption, automatic stale c
 """
 
 import os
+import time
 import tempfile
 from pathlib import Path
 from typing import Dict, Optional
@@ -23,6 +24,38 @@ try:
 except ImportError:
     AtomicFileOperations = None
     with_coordination_lock = None
+
+
+def check_pid_conflict(data: Dict, pid: int, process_type: str) -> bool:
+    """
+    Check if PID already registered as different type.
+    Prevents same PID from registering as both API server and MCP client.
+    
+    Args:
+        data: Coordination data dictionary
+        pid: Process ID to check
+        process_type: Type trying to register ('api_server' or 'mcp_client')
+        
+    Returns:
+        True if conflict detected, False if safe to register
+    """
+    # Check existing processes object (new flat structure)
+    for existing_pid_str, info in data.get('processes', {}).items():
+        existing_pid = int(existing_pid_str)
+        if existing_pid == pid and info.get('type') != process_type:
+            return True  # Conflict: PID already registered as different type
+    
+    # Check legacy api_pid field during migration period
+    legacy_api_pid = data.get('api_pid')
+    if legacy_api_pid == pid and process_type != 'api_server':
+        return True  # Conflict: PID is API but trying to register as client
+        
+    # Check legacy clients during migration period
+    for client_info in data.get('clients', {}).values():
+        if client_info.get('pid') == pid and process_type != 'mcp_client':
+            return True  # Conflict: PID is client but trying to register as API
+    
+    return False  # No conflict detected
 
 
 def get_process_registry_path(service_port: str = None) -> Path:
@@ -57,16 +90,28 @@ def register_api_server() -> bool:
     current_pid = os.getpid()
     
     def register_api_pid(data: Dict) -> Dict:
-        """Register API server PID in process registry."""
-        # Clean existing stale API PID using existing field
-        existing_api_pid = data.get('api_pid')  # Use existing field name
-        if existing_api_pid and HAS_PSUTIL and not psutil.pid_exists(existing_api_pid):
-            data.pop('api_pid', None)
-            
-        # Register this API server using EXISTING field from MCP coordination
-        data['api_pid'] = current_pid  # Use existing api_pid field
+        """Register API server in flat PID-keyed structure."""
         
-        # Preserve MCP clients using EXISTING field name
+        # Check for PID conflicts using new validation
+        if check_pid_conflict(data, current_pid, 'api_server'):
+            raise ValueError(f"PID {current_pid} already registered as different type")
+        
+        # Initialize new flat structure if needed
+        if 'processes' not in data:
+            data['processes'] = {}
+            
+        # Register in new flat structure (PID as key prevents duplicates)
+        data['processes'][str(current_pid)] = {
+            'type': 'api_server',
+            'started': time.time(),
+            'repository': os.getcwd(),
+            'last_heartbeat': time.time()
+        }
+        
+        # Set primary API for coordination
+        data['primary_api'] = current_pid
+        
+        # Preserve legacy fields during migration (backward compatibility)
         data.setdefault('clients', {})
         
         return data
@@ -124,6 +169,54 @@ def unregister_api_server() -> bool:
             return True
     except Exception:
         return False
+
+
+def migrate_legacy_structure(data: Dict) -> Dict:
+    """
+    Migrate old coordination format to new flat structure.
+    Handles backward compatibility and resolves same-PID conflicts.
+    
+    Args:
+        data: Legacy coordination data with api_pid + clients structure
+        
+    Returns:
+        Migrated data with flat processes structure
+    """
+    if 'processes' in data and not data.get('api_pid') and not data.get('clients'):
+        return data  # Already fully migrated
+        
+    migrated_data = {'processes': data.get('processes', {})}
+    
+    # Migrate legacy api_pid (takes priority in conflicts)
+    legacy_api_pid = data.get('api_pid')
+    if legacy_api_pid and HAS_PSUTIL and psutil.pid_exists(legacy_api_pid):
+        migrated_data['processes'][str(legacy_api_pid)] = {
+            'type': 'api_server',
+            'started': time.time(),
+            'repository': os.getcwd(),
+            'last_heartbeat': time.time()
+        }
+        migrated_data['primary_api'] = legacy_api_pid
+    
+    # Migrate legacy clients (skip conflicts with API)
+    for client_id, client_info in data.get('clients', {}).items():
+        pid = client_info.get('pid')
+        if (pid and 
+            HAS_PSUTIL and psutil.pid_exists(pid) and 
+            str(pid) not in migrated_data['processes']):  # No conflict
+            migrated_data['processes'][str(pid)] = {
+                'type': 'mcp_client',
+                'started': client_info.get('timestamp', time.time()),
+                'client_id': client_id,
+                'last_heartbeat': time.time()
+            }
+    
+    # Preserve other fields
+    for key, value in data.items():
+        if key not in ['api_pid', 'clients', 'processes', 'primary_api']:
+            migrated_data[key] = value
+    
+    return migrated_data
 
 
 def cleanup_process_registry() -> bool:
