@@ -765,9 +765,9 @@ class HeadlessPMMCPServer:
             processes = result.get('processes', {})
             mcp_client_count = sum(1 for info in processes.values() if info.get('type') == 'mcp_client')
             
-            # Should start API if this is the first MCP client and no API server exists
+            # Should start API if this is the first MCP client or no API server exists
             api_server_count = sum(1 for info in processes.values() if info.get('type') == 'api_server')
-            should_start = mcp_client_count == 1 and api_server_count == 0
+            should_start = (mcp_client_count == 1 and api_server_count == 0) or api_server_count == 0
             
             logger.info(f"Registered MCP client {self._client_id} ({mcp_client_count} total MCP clients, {api_server_count} API servers)")
             return should_start
