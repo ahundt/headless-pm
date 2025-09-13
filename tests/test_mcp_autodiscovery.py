@@ -131,11 +131,16 @@ class TestMCPAutoDiscovery:
             os.remove(coord_file)
             print(f"[FIXTURE SETUP {method_name}]: Cleaned coordination file for port {unique_port}")
             
-        # Also clean default coordination file to prevent cross-contamination
-        default_coord_file = f"{temp_dir}/headless_pm_mcp_clients_6969.json"
-        if os.path.exists(default_coord_file):
-            os.remove(default_coord_file)
-            print(f"[FIXTURE SETUP {method_name}]: Cleaned default coordination file")
+        # Clean ALL coordination files to prevent cross-contamination
+        import glob
+        coord_pattern = f"{temp_dir}/headless_pm_mcp_clients_*.json"
+        coord_files = glob.glob(coord_pattern)
+        for coord_file in coord_files:
+            try:
+                os.remove(coord_file)
+                print(f"[FIXTURE SETUP {method_name}]: Cleaned coordination file {os.path.basename(coord_file)}")
+            except:
+                pass
 
         # Create and yield server manager
         manager = ServerManager(port=unique_port)
