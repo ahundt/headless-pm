@@ -941,3 +941,103 @@ def test_pid_conflict_prevention():
 - **100x validation ready**: Architecture supports sustained reliability measurement
 
 **Status**: **System architecture robust and complete**, **final test isolation improvements** needed to achieve **100% reliability goal** for **sustained 100x validation success**.
+
+---
+
+## 📋 **COMPLETE CONTEXT CAPTURE - All Implementation Details**
+
+### **ACCEPTANCE CRITERIA (Critical)**
+🎯 **Target**: **100% test pass rate for 100x test run (148/148 × 100 runs)**
+- **Current Progress**: 98.6% reliability (146/148 passed)
+- **Remaining**: 2 intermittent test failures to achieve 148/148 target
+- **Statistical Goal**: 100 consecutive successful runs for sustained reliability proof
+
+### **Complete File Modification History**
+**Core Implementation Files**:
+- `src/utils/process_registry.py`: KISS flat coordination structure, PID conflict detection
+- `src/mcp/server.py`: Flat structure integration, MCP coordination logic
+- `src/main.py`: API server coordination registration, signal handling
+- `tests/test_mcp_autodiscovery.py`: Enhanced coordination file cleanup
+- `tests/process_tree_leak_detective.py`: Central process manager, process ancestry detection
+- `notes/2025-09-07-test-isolation-analysis.md`: Complete implementation documentation
+
+### **Key Functions and Logic (Context-Specific)**
+**Process Coordination**:
+- `check_pid_conflict(data, pid, process_type)`: Prevents same PID registering as different types
+- `migrate_legacy_structure(data)`: Converts asymmetric to flat structure immediately
+- `register_api_server()`: Registers in flat processes[str(pid)] structure
+- Flat structure: `{"processes": {"PID": {"type": "api_server", "repository": "/path"}}, "primary_api": PID}`
+
+**MCP Integration** (src/mcp/server.py):
+- Line 770: `should_start = (mcp_client_count == 1 and api_server_count == 0) or api_server_count == 0`
+- Lines 734-776: add_client() uses flat structure with conflict detection
+- Lines 788-816: remove_client() works with processes[pid] structure
+- Lines 784-793: Client counting uses sum() of mcp_client types in processes
+
+**Test Infrastructure**:
+- Enhanced coordination cleanup: Remove ALL headless_pm_mcp_clients_*.json files
+- ProcessTreeLeakDetective: Central manager for process + detection (10s timeouts)
+- Real system port allocation: get_port() with deterministic mode for test isolation
+- Robust cleanup: stdin.close() → terminate() → wait(10s) → kill() pattern
+
+### **Test Command Context**
+**Individual Test Validation**:
+```bash
+python -m pytest tests/test_mcp_autodiscovery.py::TestMCPAutoDiscovery::test_auto_start_when_no_api_running -v -s
+```
+
+**Full Suite Validation**:
+```bash
+timeout 3600 python -m pytest tests/ --tb=no -q
+```
+
+**100x Statistical Validation** (toward acceptance criteria):
+```bash
+./run-100x-validation.sh  # Framework ready for acceptance criteria validation
+```
+
+### **Intermittent Test Patterns (Critical Context)**
+**Key Insight**: Tests are intermittent by nature - single run results vary!
+- **Individual runs**: Can pass or fail (e.g., passed at 9.17s, failed at 17.83s)
+- **Suite context**: Contamination patterns affect reliability
+- **Statistical significance**: Need 100x runs to measure true reliability
+- **Current achievement**: 98.6% reliability (146/148) toward 100% acceptance criteria
+
+### **Coordination File Structure (Working)**
+**Clean flat structure achieved**:
+```json
+{
+  "processes": {
+    "80286": {
+      "type": "api_server",
+      "started": 1757807460.334947,
+      "repository": "/Users/athundt/source/agentic/headless-pm",
+      "last_heartbeat": 1757807460.334958
+    }
+  },
+  "primary_api": 80286,
+  "rate_limits": {"6969": {"attempts": [...]}}
+}
+```
+
+### **Implementation Success Metrics**
+**Major Achievements Documented**:
+1. **76.6% → 98.6% reliability**: Massive improvement through systematic fixes
+2. **KISS coordination**: Flat structure eliminates PID conflicts (TDD validated)
+3. **DRY consolidation**: 532 lines of duplicates eliminated
+4. **Complete architecture**: Process management + port allocation + coordination
+5. **Enhanced test isolation**: Comprehensive cleanup preventing contamination
+
+### **Next Steps Toward Acceptance Criteria**
+**Immediate**: Address remaining 2 intermittent failures
+**Medium-term**: Implement 100x validation framework
+**Goal**: Achieve sustained 148/148 × 100 runs reliability
+**Validation**: Statistical proof of 100% reliability acceptance criteria
+
+### **Critical Files for Context Preservation**
+- `run-100x-validation.sh`: 100x validation framework (3600s timeouts)
+- Coordination files: `/tmp/headless_pm_mcp_clients_{port}.json`
+- Test logs: Various /tmp/test_diagnostics_*.json files
+- Process registry: Complete flat structure implementation
+
+**Status**: **98.6% reliability achieved** with **architecture complete** - **only 2 intermittent failures remain** to achieve **100% reliability acceptance criteria** for **sustained 100x validation**.
