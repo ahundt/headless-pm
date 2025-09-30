@@ -30,9 +30,19 @@ def session_fixture():
         connect_args={"check_same_thread": False}
     )
     SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    os.unlink(db_file.name)
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        # Cleanup - guaranteed to run even if test fails/times out
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        try:
+            os.unlink(db_file.name)
+        except Exception:
+            pass
 
 @pytest.fixture(name="client")
 def client_fixture(session: Session):

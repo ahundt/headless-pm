@@ -203,10 +203,12 @@ class TestMCPInstrumentedDiagnostics:
             # Start MCP server process with enhanced monitoring
             logger.log_event("START", "Starting MCP server process")
             
+            # CRITICAL: Keep stdin open - MCP server's stdio_server() waits for stdin
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
-            ], 
-            stdout=subprocess.PIPE, 
+            ],
+            stdin=subprocess.PIPE,  # Keep stdin open to prevent immediate termination
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,

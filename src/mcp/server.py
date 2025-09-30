@@ -248,14 +248,37 @@ class HeadlessPMMCPServer:
         # Pre-emptive stale API PID check
         coordination_file = self._get_mcp_coordination_file()
         if coordination_file.exists():
-            def clean_stale_api_pid(data: Dict) -> Dict:
+            def clean_stale_pids(data: Dict) -> Dict:
+                from src.utils.process_registry import migrate_legacy_structure
+                
+                # First migrate to flat structure
+                data = migrate_legacy_structure(data)
+                
+                # Clean legacy api_pid field 
                 api_pid = data.get('api_pid')
                 if api_pid and HAS_PSUTIL and not psutil.pid_exists(api_pid):
-                    logger.warning(f"Found stale API PID {api_pid} in coordination file. Cleaning up.")
+                    logger.warning(f"Found stale legacy API PID {api_pid}. Cleaning up.")
                     del data['api_pid']
+                
+                # Clean stale PIDs from flat structure
+                if HAS_PSUTIL and 'processes' in data:
+                    stale_pids = []
+                    for pid_str, info in data['processes'].items():
+                        try:
+                            pid = int(pid_str)
+                            if not psutil.pid_exists(pid):
+                                stale_pids.append(pid_str)
+                                logger.warning(f"Found stale {info.get('type', 'unknown')} PID {pid}. Cleaning up.")
+                        except (ValueError, TypeError):
+                            stale_pids.append(pid_str)
+                            logger.warning(f"Found invalid PID entry '{pid_str}'. Cleaning up.")
+                    
+                    for pid_str in stale_pids:
+                        del data['processes'][pid_str]
+                
                 return data
             try:
-                AtomicFileOperations.atomic_json_update(coordination_file, clean_stale_api_pid, {})
+                AtomicFileOperations.atomic_json_update(coordination_file, clean_stale_pids, {})
             except Exception as e:
                 logger.warning(f"Could not perform pre-emptive stale PID check: {e}")
 
@@ -440,11 +463,14 @@ class HeadlessPMMCPServer:
             if headless_pm_cmd and "headless-pm" in " ".join(str(arg) for arg in headless_pm_cmd):
                 fork_bomb_env["MCP_PORT"] = ""  # Disable MCP server only for recursive commands
             
-            # CRITICAL FIX: Capture stderr while preserving stdout for stdio MCP compatibility
+            # Keep stdout=DEVNULL (prevents buffering issues)
+            # Keep stderr=PIPE (needed for error diagnostics and Uvicorn operation)
+            # Note: stderr PIPE may fill up with Uvicorn logs (~100 bytes/request)
+            # TODO: Investigate background stderr reader if pipe overflow occurs
             self._api_process = subprocess.Popen(
                 headless_pm_cmd,
-                stdout=subprocess.DEVNULL,  # Keep DEVNULL for stdout to prevent buffering issues and stdio MCP conflicts
-                stderr=subprocess.PIPE,     # FIXED: Capture stderr instead of DEVNULL for error diagnostics
+                stdout=subprocess.DEVNULL,  # Keep DEVNULL for stdout to prevent buffering issues
+                stderr=subprocess.PIPE,     # Keep PIPE for stderr (needed for diagnostics)
                 cwd=working_dir,
                 env=fork_bomb_env,
                 text=True,  # Enable text mode for easier log processing
@@ -464,7 +490,11 @@ class HeadlessPMMCPServer:
                     except subprocess.TimeoutExpired:
                         # Force kill if communicate hangs
                         self._api_process.kill()
-                        stdout, stderr = self._api_process.communicate()
+                        try:
+                            stdout, stderr = self._api_process.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            logger.error("Process unresponsive after SIGKILL during communicate")
+                            stdout, stderr = b"", b"Process hung after kill"
                     
                     exit_code = self._api_process.returncode
                     
@@ -531,6 +561,10 @@ class HeadlessPMMCPServer:
                     self._api_process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._api_process.kill()
+                    try:
+                        self._api_process.wait(timeout=2)  # Safe timeout after kill
+                    except subprocess.TimeoutExpired:
+                        logger.error("Process failed to die after SIGKILL - system issue")
             else:
                 logger.error("❌ API process exited during startup attempts")
                 # Get final stderr if available (stdout is DEVNULL)

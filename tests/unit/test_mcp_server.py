@@ -27,11 +27,18 @@ def engine():
     )
     SQLModel.metadata.create_all(engine)
 
-    yield engine
-
-    # Cleanup
-    engine.dispose()
-    os.unlink(db_file.name)
+    try:
+        yield engine
+    finally:
+        # Cleanup - guaranteed to run even if test fails/times out
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        try:
+            os.unlink(db_file.name)
+        except Exception:
+            pass
 
 
 @pytest.fixture

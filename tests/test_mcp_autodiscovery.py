@@ -36,18 +36,25 @@ def engine():
     """Create file-based SQLite engine for testing"""
     db_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     db_file.close()
-    
+
     engine = create_engine(
-        f"sqlite:///{db_file.name}", 
+        f"sqlite:///{db_file.name}",
         connect_args={"check_same_thread": False}
     )
     SQLModel.metadata.create_all(engine)
-    
-    yield engine
-    
-    # Cleanup
-    engine.dispose()
-    os.unlink(db_file.name)
+
+    try:
+        yield engine
+    finally:
+        # Cleanup - guaranteed to run even if test fails/times out
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        try:
+            os.unlink(db_file.name)
+        except Exception:
+            pass
 
 
 @pytest.fixture
@@ -186,8 +193,9 @@ class TestMCPAutoDiscovery:
             # Start MCP server that should connect to existing API
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
-            ], 
-            stdout=subprocess.PIPE, 
+            ],
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
@@ -216,17 +224,19 @@ class TestMCPAutoDiscovery:
             test_port = server_manager.port
             print(f"Testing MCP starting new API on port {test_port}")
             
-            # Start MCP server process (will start new API) 
+            # Start MCP server process (will start new API)
+            # CRITICAL: Keep stdin open - MCP server's stdio_server() waits for stdin
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
-            ], 
-            stdout=subprocess.PIPE, 
+            ],
+            stdin=subprocess.PIPE,  # Keep stdin open to prevent immediate termination
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent.parent,  # Project root
             env={**os.environ, "SERVICE_PORT": str(test_port)}
             )
-            
+
             try:
                 # Wait for API to start
                 api_started = False
@@ -235,7 +245,17 @@ class TestMCPAutoDiscovery:
                     if await self.is_api_running(server_manager):
                         api_started = True
                         break
-                
+
+                # Capture MCP output for debugging
+                if not api_started:
+                    # Check if process already exited
+                    poll_result = mcp_process.poll()
+                    if poll_result is not None:
+                        print(f"[MCP PROCESS EXITED] Exit code: {poll_result}")
+                        stdout, stderr = mcp_process.communicate(timeout=1.0)
+                        print(f"[MCP STDOUT]\n{stdout}")
+                        print(f"[MCP STDERR]\n{stderr}")
+
                 assert api_started, f"API should have been started by MCP server on port {test_port}"
                 print(f"✓ MCP successfully started new API on port {test_port}")
                 
@@ -256,13 +276,20 @@ class TestMCPAutoDiscovery:
         self.ensure_no_api_running(server_manager)
         
         # Start API manually first - use the test's unique port
+        # Use temp database to avoid persistent headless-pm.db contamination
+        import tempfile
+        test_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        test_db.close()
+
         api_process = subprocess.Popen([
             sys.executable, "-m", "src.main"
-        ], 
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=Path(__file__).parent.parent,  # Project root
-        env={**os.environ, "SERVICE_PORT": str(server_manager.port)}
+        env={**os.environ,
+             "SERVICE_PORT": str(server_manager.port),
+             "DATABASE_URL": f"sqlite:///{test_db.name}"}
         )
         
         try:
@@ -280,6 +307,7 @@ class TestMCPAutoDiscovery:
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -327,7 +355,17 @@ class TestMCPAutoDiscovery:
             # Cleanup both processes
             if api_process.poll() is None:
                 api_process.terminate()
-                api_process.wait()
+                try:
+                    api_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    api_process.kill()
+                    api_process.wait(timeout=2)
+
+            # Cleanup temp database
+            try:
+                os.unlink(test_db.name)
+            except:
+                pass
 
     @pytest.mark.asyncio
     async def test_command_discovery(self, server_manager, mcp_server_path):
@@ -364,6 +402,7 @@ class TestMCPAutoDiscovery:
             mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -394,6 +433,8 @@ class TestMCPAutoDiscovery:
                 
             finally:
                 if mcp_process.poll() is None:
+                    if mcp_process.stdin:
+                        mcp_process.stdin.close()
                     mcp_process.terminate()
                     mcp_process.wait()
             return  # Exit early for existing API case
@@ -406,6 +447,7 @@ class TestMCPAutoDiscovery:
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -468,6 +510,7 @@ class TestMCPAutoDiscovery:
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -497,6 +540,7 @@ class TestMCPAutoDiscovery:
             new_mcp_process = subprocess.Popen([
                 sys.executable, "-m", "src.mcp.server"
             ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True,
@@ -517,14 +561,18 @@ class TestMCPAutoDiscovery:
                 
             finally:
                 if new_mcp_process.poll() is None:
+                    if new_mcp_process.stdin:
+                        new_mcp_process.stdin.close()
                     new_mcp_process.terminate()
                     new_mcp_process.wait()
-                
+
         finally:
             if mcp_process.poll() is None:
+                if mcp_process.stdin:
+                    mcp_process.stdin.close()
                 mcp_process.terminate()
                 mcp_process.wait()
-            
+
             self.ensure_no_api_running(server_manager)
 
     @pytest.mark.asyncio
@@ -558,6 +606,7 @@ class TestMCPAutoDiscovery:
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -658,7 +707,7 @@ class TestMCPAutoDiscovery:
                 # Start first MCP client (should start API)
                 print("Starting first MCP client...")
                 mcp1_process = subprocess.Popen([
-                    sys.executable, "-m", "src.mcp"
+                    sys.executable, "-m", "src.mcp.server"
                 ], 
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -751,6 +800,7 @@ class TestMCPAutoDiscovery:
         mcp_process = subprocess.Popen([
             sys.executable, "-m", "src.mcp.server"
         ], 
+            stdin=subprocess.PIPE,  # Keep stdin open for MCP server
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True,
@@ -811,6 +861,8 @@ class TestMCPAutoDiscovery:
                 
         finally:
             if mcp_process.poll() is None:
+                if mcp_process.stdin:
+                    mcp_process.stdin.close()
                 mcp_process.terminate()
                 mcp_process.wait()
             self.ensure_no_api_running(server_manager)

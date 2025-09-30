@@ -102,7 +102,11 @@ def cleanup_dashboard():
         except (subprocess.TimeoutExpired, Exception):
             try:
                 dashboard_process.kill()
-                dashboard_process.wait()
+                try:
+                    dashboard_process.wait(timeout=2)  # CRITICAL: timeout after kill to prevent permanent hang
+                except subprocess.TimeoutExpired:
+                    # Process survived SIGKILL - extremely rare OS-level issue
+                    pass
             except Exception:
                 pass
         dashboard_process = None
@@ -159,12 +163,12 @@ def start_dashboard_if_available():
         return None
     
     try:
-        # Start dashboard process with error capture
+        # Start dashboard process - redirect output to DEVNULL to prevent pipe blocking
         dashboard_process = subprocess.Popen(
             ["npm", "run", "dev", "--", "--port", str(dashboard_port)],
             cwd=dashboard_dir,
-            stdout=subprocess.PIPE,  # Capture for error reporting
-            stderr=subprocess.PIPE,  # Capture for error reporting
+            stdout=subprocess.DEVNULL,  # DEVNULL prevents pipe buffer overflow
+            stderr=subprocess.DEVNULL,  # DEVNULL prevents pipe buffer overflow
             text=True
         )
         
@@ -194,15 +198,23 @@ async def lifespan(app: FastAPI):
         pass  # Continue startup even if registry registration fails
     
     yield
-    
+
     # Shutdown
-    # Unregister API server from process registry  
+    # 1. Dispose database engine to close all connections
+    try:
+        from src.models.database import engine
+        engine.dispose()
+    except Exception:
+        pass  # Continue shutdown even if engine disposal fails
+
+    # 2. Unregister API server from process registry
     try:
         from src.utils.process_registry import unregister_api_server
         unregister_api_server()
     except Exception:
         pass
-        
+
+    # 3. Cleanup dashboard and health checker
     cleanup_dashboard()
     await health_checker.stop()
 
