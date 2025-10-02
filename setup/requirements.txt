@@ -20,4 +20,6 @@ pytest-cov>=4.0.0
 # MCP (Model Context Protocol) for Claude integration
 mcp>=1.0.0
 
-fasteners>=0.15
+# Process management and file locking
+fasteners>=0.20
+psutil>=5.9.0

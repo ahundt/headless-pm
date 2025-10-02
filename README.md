@@ -11,8 +11,13 @@ I use this with Claude Code, but it should work with any LLM Agent.
 ### Option 1: UV Install (Recommended)
 
 ```bash
-# Install with UV (fast, modern)
-uv pip install git+<repository>
+# Install from GitHub
+uv pip install git+https://github.com/madviking/headless-pm.git
+
+# Or install locally for development
+git clone https://github.com/madviking/headless-pm.git
+cd headless-pm
+uv pip install .
 
 # Start complete system (API + Dashboard)
 headless-pm
